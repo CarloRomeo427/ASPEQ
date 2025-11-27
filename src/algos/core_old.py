@@ -455,18 +455,11 @@ def test_agent(agent, test_env, max_ep_len, logger, n_eval=10):
     ep_return_list = np.zeros(n_eval)
     ep_len_list = np.zeros(n_eval)
     for j in range(n_eval):
-        # gymnasium reset() returns (observation, info) tuple
-        o, info = test_env.reset()
-        r, ep_ret, ep_len = 0, 0, 0
-        terminated, truncated = False, False
-        d = False
-        
+        o, r, d, ep_ret, ep_len = test_env.reset(), 0, False, 0, 0
         while not (d or (ep_len == max_ep_len)):
             # Take deterministic actions at test time
             a = agent.get_test_action(o)
-            # gymnasium step() returns (obs, reward, terminated, truncated, info)
-            o, r, terminated, truncated, _ = test_env.step(a)
-            d = terminated or truncated
+            o, r, d, _ = test_env.step(a)
             ep_ret += r
             ep_len += 1
         ep_return_list[j] = ep_ret

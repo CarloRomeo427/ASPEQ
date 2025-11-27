@@ -1,3 +1,6 @@
+### AGENT CODE FOR SPEQ ALGORITHM 
+
+
 import copy
 
 import numpy as np
@@ -11,6 +14,104 @@ from src.algos.core import TanhGaussianPolicy, Mlp, soft_update_model1_with_mode
 import wandb
 
 from src.algos.core import test_agent
+
+
+class EffectiveRankMonitor:
+    """
+    Monitor effective rank and gradient diversity for plasticity tracking.
+    Based on "Learning Continually by Spectral Regularization" (ICLR 2025)
+    """
+    
+    @staticmethod
+    def compute_effective_rank(singular_values: torch.Tensor, eps: float = 1e-10) -> float:
+        """
+        Compute effective rank from singular values.
+        erank(G) = -Σ σ̄ᵢ log σ̄ᵢ (entropy of singular value distribution)
+        
+        Args:
+            singular_values: Tensor of singular values
+            eps: Small constant for numerical stability
+            
+        Returns:
+            Effective rank value
+        """
+        # Normalize singular values
+        sv_sum = singular_values.sum()
+        if sv_sum < eps:
+            return 0.0
+        
+        normalized_sv = singular_values / sv_sum
+        
+        # Filter out near-zero values
+        normalized_sv = normalized_sv[normalized_sv > eps]
+        
+        if len(normalized_sv) == 0:
+            return 0.0
+        
+        # Compute effective rank: -Σ σ̄ᵢ log σ̄ᵢ
+        log_sv = torch.log(normalized_sv)
+        effective_rank = -torch.sum(normalized_sv * log_sv).item()
+        
+        return effective_rank
+    
+    @staticmethod
+    def compute_condition_number(singular_values: torch.Tensor, eps: float = 1e-10) -> float:
+        """
+        Compute condition number (ratio of largest to smallest singular value).
+        """
+        if len(singular_values) == 0:
+            return float('inf')
+        
+        max_sv = singular_values[0]  # Assuming sorted in descending order
+        min_sv = singular_values[-1]
+        
+        if min_sv < eps:
+            return float('inf')
+        
+        return (max_sv / min_sv).item()
+    
+    @staticmethod
+    def compute_gradient_metrics(gradients: torch.Tensor) -> dict:
+        """
+        Compute spectral metrics for a gradient matrix.
+        
+        Args:
+            gradients: Tensor of shape (num_params, batch_size) representing
+                      per-example gradients
+                      
+        Returns:
+            Dictionary containing effective_rank, condition_number, spectral_norm, stable_rank
+        """
+        if gradients.dim() == 1:
+            gradients = gradients.unsqueeze(1)
+        
+        # Compute SVD
+        try:
+            U, S, Vh = torch.linalg.svd(gradients, full_matrices=False)
+        except:
+            # Fallback for numerical issues
+            return {
+                'effective_rank': 0.0,
+                'condition_number': float('inf'),
+                'spectral_norm': 0.0,
+                'stable_rank': 0.0
+            }
+        
+        # Compute metrics
+        effective_rank = EffectiveRankMonitor.compute_effective_rank(S)
+        condition_number = EffectiveRankMonitor.compute_condition_number(S)
+        spectral_norm = S[0].item() if len(S) > 0 else 0.0
+        
+        # Stable rank: ||G||_F^2 / ||G||_2^2
+        frobenius_norm_sq = torch.sum(S ** 2).item()
+        stable_rank = frobenius_norm_sq / (spectral_norm ** 2 + 1e-10)
+        
+        return {
+            'effective_rank': effective_rank,
+            'condition_number': condition_number,
+            'spectral_norm': spectral_norm,
+            'stable_rank': stable_rank
+        }
 
 
 def get_probabilistic_num_min(num_mins):
@@ -33,7 +134,7 @@ class Agent(object):
                  start_steps=5000, delay_update_steps='auto',
                  utd_ratio=1, num_Q=2, num_min=2, q_target_mode='min',
                  policy_update_delay=20, 
-                 target_drop_rate=0.0, layer_norm=False,
+                 target_drop_rate=0.0, layer_norm=False, o2o=False
                  ):
         self.policy_net = TanhGaussianPolicy(obs_dim, act_dim, (256, 256), action_limit=act_limit).to(device)
         self.q_net_list, self.q_target_net_list = [], []
@@ -48,6 +149,9 @@ class Agent(object):
         self.policy_optimizer = optim.Adam(self.policy_net.parameters(), lr=lr)
         self.q_optimizer_list = [optim.Adam(q.parameters(), lr=lr) for q in self.q_net_list]
         self.auto_alpha = auto_alpha
+
+        self.o2o = o2o
+
         if auto_alpha:
             if target_entropy == 'auto':
                 self.target_entropy = - act_dim
@@ -65,6 +169,7 @@ class Agent(object):
             self.alpha = alpha
             self.target_entropy, self.log_alpha, self.alpha_optim = None, None, None
         self.replay_buffer = ReplayBuffer(obs_dim=obs_dim, act_dim=act_dim, size=replay_size)
+        self.replay_buffer_offline = ReplayBuffer(obs_dim=obs_dim, act_dim=act_dim, size=replay_size)
         self.mse_criterion = nn.MSELoss()
         self.start_steps = start_steps
         self.obs_dim = obs_dim
@@ -86,6 +191,9 @@ class Agent(object):
         self.device = device
         self.target_drop_rate = target_drop_rate
         self.layer_norm = layer_norm
+        
+        # Effective rank monitor
+        self.effective_rank_monitor = EffectiveRankMonitor()
 
     def __get_current_num_data(self):
         return self.replay_buffer.size
@@ -93,6 +201,16 @@ class Agent(object):
     def get_exploration_action(self, obs, env):
         with torch.no_grad():
             if self.__get_current_num_data() > self.start_steps:
+                obs_tensor = torch.Tensor(obs).unsqueeze(0).to(self.device)
+                action_tensor = self.policy_net.forward(obs_tensor, deterministic=False, return_log_prob=False)[0]
+                action = action_tensor.cpu().numpy().reshape(-1)
+            else:
+                action = env.action_space.sample()
+        return action
+
+    def get_exploration_action_o2o(self, obs, env, timestep):
+        with torch.no_grad():
+            if timestep > self.start_steps:
                 obs_tensor = torch.Tensor(obs).unsqueeze(0).to(self.device)
                 action_tensor = self.policy_net.forward(obs_tensor, deterministic=False, return_log_prob=False)[0]
                 action = action_tensor.cpu().numpy().reshape(-1)
@@ -127,8 +245,30 @@ class Agent(object):
     def store_data(self, o, a, r, o2, d):
         self.replay_buffer.store(o, a, r, o2, d)
 
+    def store_data_offline(self, o, a, r, o2, d):
+        self.replay_buffer_offline.store(o, a, r, o2, d)
+
     def sample_data(self, batch_size):
         batch = self.replay_buffer.sample_batch(batch_size)
+        obs_tensor = Tensor(batch['obs1']).to(self.device)
+        obs_next_tensor = Tensor(batch['obs2']).to(self.device)
+        acts_tensor = Tensor(batch['acts']).to(self.device)
+        rews_tensor = Tensor(batch['rews']).unsqueeze(1).to(self.device)
+        done_tensor = Tensor(batch['done']).unsqueeze(1).to(self.device)
+        return obs_tensor, obs_next_tensor, acts_tensor, rews_tensor, done_tensor
+    
+    def sample_data_mix(self, batch_size):
+        batch_online = self.replay_buffer.sample_batch(batch_size)
+        batch_offline = self.replay_buffer.sample_batch(batch_size)
+
+        batch = {
+            'obs1': np.concatenate([batch_online['obs1'], batch_offline['obs1']], axis=0),
+            'obs2': np.concatenate([batch_online['obs2'], batch_offline['obs2']], axis=0),
+            'acts': np.concatenate([batch_online['acts'], batch_offline['acts']], axis=0),
+            'rews': np.concatenate([batch_online['rews'], batch_offline['rews']], axis=0),
+            'done': np.concatenate([batch_online['done'], batch_offline['done']], axis=0),
+        }
+
         obs_tensor = Tensor(batch['obs1']).to(self.device)
         obs_next_tensor = Tensor(batch['obs2']).to(self.device)
         acts_tensor = Tensor(batch['acts']).to(self.device)
@@ -198,10 +338,132 @@ class Agent(object):
                 y_q = rews_tensor + self.gamma * (1 - done_tensor) * next_q_with_log_prob
         return y_q, sample_idxs
 
-    def train(self, logger):
+    def compute_effective_rank_metrics(self, batch_size=128):
+        """
+        Compute effective rank and gradient diversity metrics for Q-networks and policy.
+        This is computationally expensive, so call it periodically (e.g., every 1000-5000 steps).
+        
+        Returns:
+            Dictionary with metrics for Q1, Q2, and policy networks
+        """
+        metrics = {}
+        
+        # Sample a batch
+        if self.o2o:
+            obs_tensor, obs_next_tensor, acts_tensor, rews_tensor, done_tensor = self.sample_data_mix(batch_size)
+        else:
+            obs_tensor, obs_next_tensor, acts_tensor, rews_tensor, done_tensor = self.sample_data(batch_size)
+        
+        # ========== Q-Network Metrics ==========
+        for q_i in range(self.num_Q):
+            q_net = self.q_net_list[q_i]
+            
+            # Compute per-example gradients for Q-network
+            per_example_grads = []
+            
+            for i in range(batch_size):
+                # Single example
+                obs_i = obs_tensor[i:i+1]
+                acts_i = acts_tensor[i:i+1]
+                obs_next_i = obs_next_tensor[i:i+1]
+                rews_i = rews_tensor[i:i+1]
+                done_i = done_tensor[i:i+1]
+                
+                # Compute Q-loss for this example
+                y_q, _ = self.get_redq_q_target_no_grad(obs_next_i, rews_i, done_i)
+                q_pred = q_net(torch.cat([obs_i, acts_i], 1))
+                loss = F.mse_loss(q_pred, y_q)
+                
+                # Compute gradients
+                self.q_optimizer_list[q_i].zero_grad()
+                loss.backward(retain_graph=False)
+                
+                # Collect gradients
+                grad_vec = []
+                for param in q_net.parameters():
+                    if param.grad is not None:
+                        grad_vec.append(param.grad.flatten().detach())
+                
+                if len(grad_vec) > 0:
+                    per_example_grads.append(torch.cat(grad_vec))
+            
+            # Stack into gradient matrix (num_params x batch_size)
+            if len(per_example_grads) > 0:
+                gradient_matrix = torch.stack(per_example_grads, dim=1)
+                
+                # Compute metrics
+                q_metrics = self.effective_rank_monitor.compute_gradient_metrics(gradient_matrix)
+                metrics[f'Q{q_i+1}_effective_rank'] = q_metrics['effective_rank']
+                metrics[f'Q{q_i+1}_condition_number'] = q_metrics['condition_number']
+                metrics[f'Q{q_i+1}_spectral_norm'] = q_metrics['spectral_norm']
+                metrics[f'Q{q_i+1}_stable_rank'] = q_metrics['stable_rank']
+            
+            # Zero out gradients
+            self.q_optimizer_list[q_i].zero_grad()
+        
+        # ========== Policy Network Metrics ==========
+        per_example_policy_grads = []
+        
+        for i in range(batch_size):
+            obs_i = obs_tensor[i:i+1]
+            
+            # Compute policy loss for this example
+            a_tilda, _, _, log_prob_a_tilda, _, _ = self.policy_net.forward(obs_i)
+            
+            # Get Q-values for policy gradient
+            q_list = []
+            for q_net in self.q_net_list:
+                with torch.no_grad():
+                    q_val = q_net(torch.cat([obs_i, a_tilda], 1))
+                    q_list.append(q_val)
+            
+            ave_q = torch.mean(torch.cat(q_list, 1), dim=1, keepdim=True)
+            policy_loss = (self.alpha * log_prob_a_tilda - ave_q)
+            
+            # Compute gradients
+            self.policy_optimizer.zero_grad()
+            policy_loss.backward(retain_graph=False)
+            
+            # Collect gradients
+            grad_vec = []
+            for param in self.policy_net.parameters():
+                if param.grad is not None:
+                    grad_vec.append(param.grad.flatten().detach())
+            
+            if len(grad_vec) > 0:
+                per_example_policy_grads.append(torch.cat(grad_vec))
+        
+        # Stack into gradient matrix
+        if len(per_example_policy_grads) > 0:
+            policy_gradient_matrix = torch.stack(per_example_policy_grads, dim=1)
+            
+            # Compute metrics
+            policy_metrics = self.effective_rank_monitor.compute_gradient_metrics(policy_gradient_matrix)
+            metrics['policy_effective_rank'] = policy_metrics['effective_rank']
+            metrics['policy_condition_number'] = policy_metrics['condition_number']
+            metrics['policy_spectral_norm'] = policy_metrics['spectral_norm']
+            metrics['policy_stable_rank'] = policy_metrics['stable_rank']
+        
+        # Zero out gradients
+        self.policy_optimizer.zero_grad()
+        
+        return metrics
+
+    def train(self, logger, current_env_step=None):
+        """
+        Train the agent for one step.
+        
+        Args:
+            logger: Logger object for storing training metrics
+            current_env_step: Current environment step for wandb logging (optional)
+        """
         num_update = 0 if self.__get_current_num_data() <= self.delay_update_steps else self.utd_ratio
         for i_update in range(num_update):
-            obs_tensor, obs_next_tensor, acts_tensor, rews_tensor, done_tensor = self.sample_data(self.batch_size)
+
+            if self.o2o:
+                obs_tensor, obs_next_tensor, acts_tensor, rews_tensor, done_tensor = self.sample_data_mix(self.batch_size)
+            else:
+                obs_tensor, obs_next_tensor, acts_tensor, rews_tensor, done_tensor = self.sample_data(self.batch_size)
 
             """Q loss"""
             y_q, sample_idxs = self.get_redq_q_target_no_grad(obs_next_tensor, rews_tensor, done_tensor)
@@ -252,14 +514,19 @@ class Agent(object):
             for q_i in range(self.num_Q):
                 soft_update_model1_with_model2(self.q_target_net_list[q_i], self.q_net_list[q_i], self.polyak)
 
+            # Only log at the last update and only if current_env_step is provided
             if i_update == num_update - 1:
                 logger.store(LossPi=policy_loss.cpu().item(), LossQ1=q_loss_all.cpu().item() / self.num_Q,
                              LossAlpha=alpha_loss.cpu().item(), Q1Vals=q_prediction.detach().cpu().numpy(),
                              Alpha=self.alpha, LogPi=log_prob_a_tilda.detach().cpu().numpy(),
                              PreTanh=pretanh.abs().detach().cpu().numpy().reshape(-1))
 
-                wandb.log({"policy_loss": policy_loss.cpu().item(), "mean_loss_q": q_loss_all.cpu().item() / self.num_Q
-                           })
+                # Log to wandb with explicit step if provided
+                if current_env_step is not None:
+                    wandb.log({
+                        "policy_loss": policy_loss.cpu().item(), 
+                        "mean_loss_q": q_loss_all.cpu().item() / self.num_Q
+                    }, step=current_env_step)
 
         if num_update == 0:
             logger.store(LossPi=0, LossQ1=0, LossAlpha=0, Q1Vals=0, Alpha=0, LogPi=0, PreTanh=0)
@@ -313,27 +580,44 @@ class Agent(object):
         average_loss = total_loss / num_batches
         return average_loss
 
-    def finetune_offline(self, epochs, test_env=None):
-        """ Finetune the model on the top x% of the data """
+    def finetune_offline(self, epochs, test_env=None, current_env_step=None):
+        """ 
+        Finetune the model on the replay buffer data.
+        
+        Args:
+            epochs: Number of offline training epochs
+            test_env: Environment for evaluation (optional)
+            current_env_step: Current environment step for wandb logging
+        """
 
+        # Log initial validation loss with explicit step
         initial_loss = self.evaluate_validation_loss()
-        wandb.log({"ValLoss": initial_loss})
+        if current_env_step is not None:
+            wandb.log({"ValLoss": initial_loss}, step=current_env_step)
        
-
         for e in range(epochs):
-            if e % 1000 == 0:
+            # Log validation loss every 1000 epochs
+            if e % 1000 == 0 and e > 0:
                 val_loss = self.evaluate_validation_loss()
-                wandb.log({"ValLoss": val_loss})
-            if test_env and (e + 1) % 5000 == 0:
-                test_rw = test_agent(self, test_env, 1000, None)  # add logging here
-                wandb.log({"EvalReward": np.mean(test_rw)})
+                if current_env_step is not None:
+                    # Use same env step for all offline updates within this offline training phase
+                    wandb.log({"ValLoss": val_loss}, step=current_env_step)
             
-                
-            obs_tensor, obs_next_tensor, acts_tensor, rews_tensor, done_tensor = self.sample_data(
+            # Evaluate on test environment every 5000 epochs
+            if test_env and (e + 1) % 5000 == 0:
+                test_rw = test_agent(self, test_env, 1000, None)
+                if current_env_step is not None:
+                    wandb.log({"OfflineEvalReward": np.mean(test_rw)}, step=current_env_step)
+            
+            # Sample data and train
+            if self.o2o:
+                obs_tensor, obs_next_tensor, acts_tensor, rews_tensor, done_tensor = self.sample_data_mix(
+                    self.batch_size)
+            else:
+                obs_tensor, obs_next_tensor, acts_tensor, rews_tensor, done_tensor = self.sample_data(
                 self.batch_size)
             
-            
-            """Q loss"""
+            """Q loss with expectile loss"""
             y_q, sample_idxs = self.get_redq_q_target_no_grad(obs_next_tensor, rews_tensor, done_tensor)
             q_prediction_list = []
             for q_i in range(self.num_Q):
@@ -343,14 +627,15 @@ class Agent(object):
             y_q = y_q.expand((-1, self.num_Q)) if y_q.shape[1] == 1 else y_q
             q_loss_all = self.expectile_loss(q_prediction_cat - y_q,).mean() * self.num_Q
 
+            # Update Q-networks
             for q_i in range(self.num_Q):
                 self.q_optimizer_list[q_i].zero_grad()
             q_loss_all.backward()
 
-            
             for q_i in range(self.num_Q):
                 self.q_optimizer_list[q_i].step()
 
+            # Update target networks
             for q_i in range(self.num_Q):
                 soft_update_model1_with_model2(self.q_target_net_list[q_i], self.q_net_list[q_i],
                                                 self.polyak)

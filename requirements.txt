@@ -1,5 +1,18 @@
-numpy
+numpy>=1.24
 torch
-gym
+gymnasium
 tensorboard
 wandb
+
+# Packages required to build and run mujoco-py
+Cython==0.29.36
+mujoco-py==2.1.2.14
+glfw==2.10.0
+imageio==2.37.2
+pillow==12.0.0
+cffi==2.0.0
+fasteners==0.20
+pycparser==2.23
+
+# Notes: mujoco-py requires system libraries (MuJoCo binaries, libosmesa, libglfw, patchelf, etc.).
+# Install system packages separately; see the project README for platform-specific instructions.

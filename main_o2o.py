@@ -1,3 +1,6 @@
+### MAIN FILE FOR SPEQ OFFLINE-TO-ONLINE TRAINING USING MINARI DATASETS
+
+
 import gymnasium as gym
 import numpy as np
 import torch
@@ -5,6 +8,7 @@ import time
 import sys
 import mujoco_py
 import wandb
+import minari
 
 from src.algos.agent import Agent
 from src.algos.core import mbpo_epoches, test_agent
@@ -25,7 +29,107 @@ def print_class_attributes(obj):
         print(f"{attr}: {value}")
 
 
-def SPEQ(env_name, seed=0, epochs='mbpo', steps_per_epoch=1000,
+def get_minari_dataset_name(env_name, quality='expert'):
+    """
+    Map Gymnasium environment name to Minari dataset name.
+    
+    Args:
+        env_name: Gymnasium environment name (e.g., 'Hopper-v5', 'HalfCheetah-v4')
+        quality: Dataset quality level ('expert', 'medium', 'simple')
+    
+    Returns:
+        Minari dataset name (e.g., 'mujoco/hopper/expert-v0')
+    """
+    # Extract base environment name (remove version suffix)
+    base_name = env_name.split('-')[0].lower()
+    
+    # Map common environment names to Minari naming convention
+    env_mapping = {
+        'hopper': 'hopper',
+        'halfcheetah': 'halfcheetah',
+        'walker2d': 'walker2d',
+        'ant': 'ant',
+        'swimmer': 'swimmer',
+        'reacher': 'reacher',
+        'pusher': 'pusher',
+        'invertedpendulum': 'invertedpendulum',
+        'inverteddoublependulum': 'inverteddoublependulum',
+        'humanoid': 'humanoid',
+        'humanoidstandup': 'humanoidstandup'
+    }
+    
+    minari_env_name = env_mapping.get(base_name, base_name)
+    return f'mujoco/{minari_env_name}/{quality}-v0'
+
+
+def load_minari_dataset(agent, dataset_name=None, env_name=None, quality='expert'):
+    """
+    Load Minari dataset into agent's replay buffer.
+    
+    Args:
+        agent: The SPEQ agent with a replay buffer
+        dataset_name: Specific Minari dataset name (e.g., 'mujoco/hopper/expert-v0')
+        env_name: Gymnasium environment name (used if dataset_name not provided)
+        quality: Dataset quality level ('expert', 'medium', 'simple')
+    
+    Returns:
+        Number of transitions loaded
+    """
+    # Determine dataset name
+    if dataset_name is None:
+        if env_name is None:
+            raise ValueError("Either dataset_name or env_name must be provided")
+        dataset_name = get_minari_dataset_name(env_name, quality)
+    
+    print(f"Loading Minari dataset: {dataset_name}")
+    
+    # Load the dataset (will download if not present locally)
+    try:
+        dataset = minari.load_dataset(dataset_name)
+    except Exception as e:
+        print(f"Error loading dataset {dataset_name}: {e}")
+        print("Attempting to download the dataset...")
+        try:
+            minari.download_dataset(dataset_name)
+            dataset = minari.load_dataset(dataset_name)
+        except Exception as e2:
+            raise RuntimeError(f"Failed to load dataset {dataset_name}: {e2}")
+    
+    print(f"Dataset info:")
+    print(f"  Total episodes: {dataset.total_episodes}")
+    print(f"  Total steps: {dataset.total_steps}")
+    print(f"  Observation space: {dataset.observation_space}")
+    print(f"  Action space: {dataset.action_space}")
+    
+    # Extract transitions from episodes and add to replay buffer
+    total_transitions = 0
+    
+    for episode in dataset.iterate_episodes():
+        # episode.observations has shape (T+1, obs_dim)
+        # episode.actions has shape (T, act_dim)
+        T = len(episode.actions)
+        
+        for t in range(T):
+            obs = episode.observations[t]
+            action = episode.actions[t]
+            reward = episode.rewards[t]
+            next_obs = episode.observations[t + 1]
+            
+            # In Gymnasium, done = terminated OR truncated
+            # For replay buffer, we typically want to mark episodes as done
+            # only if truly terminated (not truncated by time limit)
+            # to avoid improper bootstrapping
+            done = episode.terminations[t]
+            
+            agent.store_data_offline(obs, action, reward, next_obs, done)
+            total_transitions += 1
+    
+    print(f"Successfully loaded {total_transitions} transitions from {dataset.total_episodes} episodes")
+    
+    return total_transitions
+
+
+def SPEQ(env_name, seed=0, epochs=300, steps_per_epoch=1000,
          max_ep_len=1000, n_evals_per_epoch=1,
          logger_kwargs=dict(), debug=False,
          hidden_sizes=(256, 256), replay_size=int(1e6), batch_size=256,
@@ -35,8 +139,10 @@ def SPEQ(env_name, seed=0, epochs='mbpo', steps_per_epoch=1000,
          utd_ratio=1, num_Q=2, num_min=2, q_target_mode='min',
          policy_update_delay=20,
          evaluate_bias=False, n_mc_eval=1000, n_mc_cutoff=350, reseed_each_epoch=True,
-         gpu_id=0, target_drop_rate=0.0, layer_norm=False,  offline_frequency=1000,
-         offline_epochs=100, ):
+         gpu_id=0, target_drop_rate=0.0, layer_norm=False, offline_frequency=1000,
+         offline_epochs=100, use_minari=False, minari_dataset=None, minari_quality='expert',
+        #  initial_offline_training=True
+         ):
     if debug:
         hidden_sizes = [2, 2]
         batch_size = 2
@@ -91,6 +197,8 @@ def SPEQ(env_name, seed=0, epochs='mbpo', steps_per_epoch=1000,
     start_time = time.time()
     sys.stdout.flush()
 
+    
+
     """init agent and start training"""
     agent = Agent(env_name, obs_dim, act_dim, act_limit, device,
                   hidden_sizes, replay_size, batch_size,
@@ -101,9 +209,28 @@ def SPEQ(env_name, seed=0, epochs='mbpo', steps_per_epoch=1000,
                   policy_update_delay,
                   target_drop_rate=target_drop_rate,
                   layer_norm=layer_norm,
+                  o2o = args.use_minari
                   )
 
     print_class_attributes(agent)
+
+    # Load Minari dataset if specified
+    offline_samples = 0
+    if use_minari:
+        offline_samples = load_minari_dataset(
+            agent, 
+            dataset_name=minari_dataset, 
+            env_name=env_name, 
+            quality=minari_quality
+        )
+        print(f"Loaded {offline_samples} offline transitions")
+        wandb.log({"offline_samples_loaded": offline_samples}, step=0)
+        
+        # # Optionally: do initial offline training on Minari data
+        # if initial_offline_training and offline_samples > start_steps:
+        #     print(f"Performing initial offline training on Minari data ({offline_epochs} epochs)...")
+        #     agent.finetune_offline(epochs=offline_epochs, test_env=test_env, current_env_step=0)
+        #     print("Initial offline training complete")
 
     # Initialize environment with gymnasium interface
     # reset() now returns (observation, info) tuple
@@ -167,7 +294,7 @@ def SPEQ(env_name, seed=0, epochs='mbpo', steps_per_epoch=1000,
                 }, step=current_step)
                 
             # Effective rank metrics every 5 epochs
-            if epoch % 5 == 0:
+            if epoch % 5 == 0 and args.calc_plasticity:
                 rank_metrics = agent.compute_effective_rank_metrics(batch_size=256)
                 wandb.log(rank_metrics, step=current_step)
 
@@ -232,7 +359,7 @@ if __name__ == '__main__':
     parser.add_argument(
         "--exp-name",
         type=str,
-        default="src-hopper",
+        default="speq_o2o",
         help="Experiment name (used for checkpoints, logs, etc.)"
     )
     parser.add_argument(
@@ -265,7 +392,7 @@ if __name__ == '__main__':
     parser.add_argument(
         "--epochs",
         type=int,
-        default=100000,
+        default=300,
         help="Number of training epochs"
     )
     parser.add_argument(
@@ -306,6 +433,38 @@ if __name__ == '__main__':
         default=1e-4,
         help="Dropout rate for the target value network"
     )
+    # ─── Plasticity ─────────────────────────────────────────────────
+    parser.add_argument(
+        "--calc-plasticity",
+        action="store_true",
+        help="Calculate plasticity metrics during training"
+    )
+    # ─── Minari Offline-to-Online ─────────────────────────────────────────────────
+    parser.add_argument(
+        "--use-minari",
+        action="store_true",
+        help="Load Minari dataset for offline-to-online training"
+    )
+    parser.add_argument(
+        "--minari-dataset",
+        type=str,
+        default=None,
+        help="Specific Minari dataset name (e.g., 'mujoco/hopper/expert-v0'). If None, auto-generates from env name and quality"
+    )
+    parser.add_argument(
+        "--minari-quality",
+        type=str,
+        default='expert',
+        choices=['expert', 'medium', 'simple'],
+        help="Dataset quality level (expert, medium, simple)"
+    )
+    # parser.add_argument(
+    #     "--no-initial-offline-training",
+    #     dest="initial_offline_training",
+    #     action="store_false",
+    #     help="Skip initial offline training phase on Minari data"
+    # )
+    # parser.set_defaults(initial_offline_training=True)
 
     # ─── Boolean Toggles ──────────────────────────────────────────────────────────
     # layer_norm defaults to True, but you can turn it off explicitly:
@@ -324,7 +483,7 @@ if __name__ == '__main__':
 
     args = parser.parse_args()
 
-    exp_name_full = args.exp_name + '_%s' % args.env
+    exp_name_full = args.exp_name + '_%s' % args.env + '_%s' % args.minari_quality 
     args.data_dir = './runs/' + str(args.info) + '/'
     logger_kwargs = setup_logger_kwargs(exp_name_full, args.seed, args.data_dir)
 
@@ -346,4 +505,9 @@ if __name__ == '__main__':
          offline_frequency=args.offline_frequency, num_Q=args.num_q,
          offline_epochs=args.offline_epochs,
          hidden_sizes=hidden_sizes,
-         evaluate_bias=args.evaluate_bias)
+         evaluate_bias=args.evaluate_bias,
+         use_minari=args.use_minari,
+         minari_dataset=args.minari_dataset,
+         minari_quality=args.minari_quality,
+        #  initial_offline_training=args.initial_offline_training
+         )

@@ -63,25 +63,21 @@ def SPEQ(env_name, seed=0, epochs='mbpo', steps_per_epoch=1000,
     env, test_env, bias_eval_env = env_fn(), env_fn(), env_fn()
 
     def seed_all(epoch):
-        """
-        Seed all environments and random number generators.
-        In gymnasium, seeding is done through reset() with seed parameter.
-        """
         seed_shift = epoch * 9999
         mod_value = 999999
         env_seed = (seed + seed_shift) % mod_value
         test_env_seed = (seed + 10000 + seed_shift) % mod_value
         bias_eval_env_seed = (seed + 20000 + seed_shift) % mod_value
-        
-        # Seed PyTorch and NumPy
         torch.manual_seed(env_seed)
         np.random.seed(env_seed)
-        
-        # Store seeds for use in reset() - gymnasium uses reset(seed=...) instead of env.seed()
-        return env_seed, test_env_seed, bias_eval_env_seed
+        env.seed(env_seed)
+        env.action_space.np_random.seed(env_seed)
+        test_env.seed(test_env_seed)
+        test_env.action_space.np_random.seed(test_env_seed)
+        bias_eval_env.seed(bias_eval_env_seed)
+        bias_eval_env.action_space.np_random.seed(bias_eval_env_seed)
 
-    # Initial seeding
-    env_seed, test_env_seed, bias_eval_env_seed = seed_all(epoch=0)
+    seed_all(epoch=0)
 
     """prepare to init agent"""
     obs_dim = env.observation_space.shape[0]
@@ -105,35 +101,23 @@ def SPEQ(env_name, seed=0, epochs='mbpo', steps_per_epoch=1000,
 
     print_class_attributes(agent)
 
-    # Initialize environment with gymnasium interface
-    # reset() now returns (observation, info) tuple
-    o, info = env.reset(seed=env_seed)
-    r, ep_ret, ep_len = 0, 0, 0
-    terminated, truncated = False, False
+    o, r, d, ep_ret, ep_len = env.reset(), 0, False, 0, 0
 
     for t in range(total_steps):
 
         a = agent.get_exploration_action(o, env)
 
-        # gymnasium step() returns 5 values: (obs, reward, terminated, truncated, info)
-        o2, r, terminated, truncated, info = env.step(a)
-        
-        # Episode is done if either terminated or truncated
-        d = terminated or truncated
+        o2, r, d, _ = env.step(a)
 
         ep_len += 1
-        # In gymnasium, truncated specifically indicates time limit cutoff
-        # We only want to mark as 'done' if truly terminated, not truncated
-        d_store = terminated and not truncated
+        d = False if ep_len == max_ep_len else d
 
-        agent.store_data(o, a, r, o2, d_store)
+        agent.store_data(o, a, r, o2, d)
 
-        # OFFLINE TRAINING: Pass current step for proper logging
         if offline_frequency > 0 and (t + 1) % offline_frequency == 0:
-            agent.finetune_offline(epochs=offline_epochs, test_env=test_env, current_env_step=t+1)
+            agent.finetune_offline(epochs=offline_epochs, test_env=test_env)
 
-        # ONLINE TRAINING: Pass current step for proper logging
-        agent.train(logger, current_env_step=t+1)
+        agent.train(logger)
 
         o = o2
         ep_ret += r
@@ -141,44 +125,30 @@ def SPEQ(env_name, seed=0, epochs='mbpo', steps_per_epoch=1000,
         if d or (ep_len == max_ep_len):
             logger.store(EpRet=ep_ret, EpLen=ep_len)
 
-            # Reset returns (observation, info) in gymnasium
-            o, info = env.reset()
-            r, ep_ret, ep_len = 0, 0, 0
-            terminated, truncated = False, False
+            o, r, d, ep_ret, ep_len = env.reset(), 0, False, 0, 0
 
-        # EPOCH LOGGING: Always at 1000-step intervals based on environment steps
-        if (t + 1) % 1000 == 0:
-            epoch = t // 1000
-            current_step = t + 1
+        if (t + 1) % steps_per_epoch == 0:
+            epoch = t // steps_per_epoch
 
-            # Evaluate agent performance
             test_rw = test_agent(agent, test_env, max_ep_len, logger)
-            wandb.log({"EvalReward": np.mean(test_rw)}, step=current_step)
+            wandb.log({"EvalReward": np.mean(test_rw)})
 
-            # Bias evaluation if enabled
             if evaluate_bias:
-                normalized_bias_sqr_per_state, normalized_bias_per_state, bias = log_bias_evaluation(
-                    bias_eval_env, agent, logger, max_ep_len, alpha, gamma, n_mc_eval, n_mc_cutoff
-                )
-                wandb.log({
-                    "normalized_bias_sqr_per_state": np.abs(np.mean(normalized_bias_sqr_per_state)),
-                    "normalized_bias_per_state": np.mean(normalized_bias_per_state),
-                    "bias": np.mean(bias)
-                }, step=current_step)
-                
-            # Effective rank metrics every 5 epochs
-            if epoch % 5 == 0:
-                rank_metrics = agent.compute_effective_rank_metrics(batch_size=256)
-                wandb.log(rank_metrics, step=current_step)
+                normalized_bias_sqr_per_state, normalized_bias_per_state, bias = log_bias_evaluation(bias_eval_env,
+                                                                                                     agent, logger,
+                                                                                                     max_ep_len, alpha,
+                                                                                                     gamma, n_mc_eval,
+                                                                                                     n_mc_cutoff)
+                wandb.log({"normalized_bias_sqr_per_state": np.abs(np.mean(normalized_bias_sqr_per_state)),
+                           "normalized_bias_per_state": np.mean(normalized_bias_per_state),
+                           "bias": np.mean(bias)
+                           })
 
-            # Reseed if configured
             if reseed_each_epoch:
-                env_seed, test_env_seed, bias_eval_env_seed = seed_all(epoch)
-                o, info = env.reset(seed=env_seed)
-                r, ep_ret, ep_len = 0, 0, 0
-                terminated, truncated = False, False
+                seed_all(epoch)
 
-            # Console logging
+            """logging"""
+
             logger.log_tabular('Epoch', epoch)
             logger.log_tabular('TotalEnvInteracts', t)
             logger.log_tabular('Time', time.time() - start_time)
@@ -265,7 +235,7 @@ if __name__ == '__main__':
     parser.add_argument(
         "--epochs",
         type=int,
-        default=100000,
+        default=300_000,
         help="Number of training epochs"
     )
     parser.add_argument(
@@ -334,8 +304,7 @@ if __name__ == '__main__':
         name=f'{exp_name_full}',
         project="SPEQ",
         config=args,
-        mode='online' if args.log_wandb else 'disabled',
-        save_code=True
+        mode='online' if args.log_wandb else 'disabled'
     )
 
     SPEQ(args.env, seed=args.seed, epochs=args.epochs,
