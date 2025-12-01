@@ -127,6 +127,19 @@ def load_minari_dataset(agent, dataset_name=None, env_name=None, quality='expert
     
     return total_transitions
 
+def set_dropout(env_name, target_drop_rate=0.0):
+    if target_drop_rate == 0.0:
+        return 0.0
+    else:
+        if env_name == "Humanoid-v5":
+            return 0.1
+        elif env_name == "Ant-v5":
+            return 0.01
+        elif env_name in ["Walker2d-v5", "HalfCheetah-v5", "Pusher-v5"]:
+            return 0.005
+        elif env_name in ["Hopper-v5", "Swimmer-v5", "Reacher-v5", "InvertedPendulum-v5", "InvertedDoublePendulum-v5"]:
+            return 0.001
+
 
 def SPEQ(env_name, seed=0, epochs=300, steps_per_epoch=1000,
          max_ep_len=1000, n_evals_per_epoch=1,
@@ -510,7 +523,7 @@ if __name__ == '__main__':
     parser.add_argument(
         "--target-drop-rate",
         type=float,
-        default=1e-4,
+        default=999.0,
         help="Dropout rate for the target value network"
     )
     
@@ -560,7 +573,7 @@ if __name__ == '__main__':
         exp_name_full = args.exp_name + '_%s' % args.env + '_%s' % args.minari_quality
     else:
         exp_name_full = args.exp_name + '_%s' % args.env
-        
+
     args.data_dir = './runs/' + str(args.info) + '/'
     logger_kwargs = setup_logger_kwargs(exp_name_full, args.seed, args.data_dir)
 
@@ -574,10 +587,12 @@ if __name__ == '__main__':
         save_code=True
     )
 
+    auto_dropout = set_dropout(args.env, args.target_drop_rate)
+
     SPEQ(args.env, seed=args.seed, epochs=args.epochs,
          logger_kwargs=logger_kwargs, debug=args.debug,
          gpu_id=args.gpu_id,
-         target_drop_rate=args.target_drop_rate,
+         target_drop_rate=auto_dropout,
          layer_norm=args.layer_norm,
          num_Q=args.num_q,
          offline_epochs=args.offline_epochs,

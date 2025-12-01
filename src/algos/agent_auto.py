@@ -331,7 +331,7 @@ class Agent(object):
         """
         current_size = self.replay_buffer.size
 
-        if self.val_replay_buffer.size < 1000:
+        if self.val_replay_buffer.size < 1000 and not self.o2o:
             return False
         
         if current_size >= self.next_trigger_size:
