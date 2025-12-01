@@ -1,4 +1,4 @@
-### MAIN FILE FOR SPEQ OFFLINE-TO-ONLINE TRAINING USING MINARI DATASETS
+### MAIN FILE FOR SPEQ OFFLINE-TO-ONLINE TRAINING WITH ADAPTIVE TRIGGERING
 
 
 import gymnasium as gym
@@ -9,7 +9,7 @@ import sys
 import wandb
 import minari
 
-from src.algos.agent import Agent
+from src.algos.agent_auto import Agent
 from src.algos.core import mbpo_epoches, test_agent
 from src.utils.run_utils import setup_logger_kwargs
 from src.utils.bias_utils import log_bias_evaluation
@@ -138,10 +138,22 @@ def SPEQ(env_name, seed=0, epochs=300, steps_per_epoch=1000,
          utd_ratio=1, num_Q=2, num_min=2, q_target_mode='min',
          policy_update_delay=20,
          evaluate_bias=False, n_mc_eval=1000, n_mc_cutoff=350, reseed_each_epoch=True,
-         gpu_id=0, target_drop_rate=0.0, layer_norm=False, offline_frequency=1000,
+         gpu_id=0, target_drop_rate=0.0, layer_norm=False, 
          offline_epochs=100, use_minari=False, minari_dataset=None, minari_quality='expert',
-        #  initial_offline_training=True
+         val_buffer_prob=0.1, val_buffer_offline_frac=0.1,
+         val_check_interval=1000, val_patience=5000,
+         adaptive_trigger_expansion_rate=1.1
          ):
+    """
+    SPEQ with adaptive offline stabilization triggering.
+    
+    NEW PARAMETERS:
+        val_buffer_prob: Probability of adding online transitions to validation buffer (default: 0.1)
+        val_buffer_offline_frac: Fraction of offline data to add to validation buffer (default: 0.1)
+        val_check_interval: Steps between validation checks during offline training (default: 1000)
+        val_patience: Steps without validation improvement before early stopping (default: 5000)
+        adaptive_trigger_expansion_rate: Buffer growth rate for adaptive triggering (default: 1.1)
+    """
     if debug:
         hidden_sizes = [2, 2]
         batch_size = 2
@@ -196,9 +208,7 @@ def SPEQ(env_name, seed=0, epochs=300, steps_per_epoch=1000,
     start_time = time.time()
     sys.stdout.flush()
 
-    
-
-    """init agent and start training"""
+    """init agent with new validation parameters"""
     agent = Agent(env_name, obs_dim, act_dim, act_limit, device,
                   hidden_sizes, replay_size, batch_size,
                   lr, gamma, polyak,
@@ -208,7 +218,12 @@ def SPEQ(env_name, seed=0, epochs=300, steps_per_epoch=1000,
                   policy_update_delay,
                   target_drop_rate=target_drop_rate,
                   layer_norm=layer_norm,
-                  o2o = args.use_minari
+                  o2o=args.use_minari,
+                  val_buffer_prob=val_buffer_prob,
+                  val_buffer_offline_frac=val_buffer_offline_frac,
+                  val_check_interval=val_check_interval,
+                  val_patience=val_patience,
+                  adaptive_trigger_expansion_rate=adaptive_trigger_expansion_rate
                   )
 
     print_class_attributes(agent)
@@ -225,17 +240,18 @@ def SPEQ(env_name, seed=0, epochs=300, steps_per_epoch=1000,
         print(f"Loaded {offline_samples} offline transitions")
         wandb.log({"offline_samples_loaded": offline_samples}, step=0)
         
-        # # Optionally: do initial offline training on Minari data
-        # if initial_offline_training and offline_samples > start_steps:
-        #     print(f"Performing initial offline training on Minari data ({offline_epochs} epochs)...")
-        #     agent.finetune_offline(epochs=offline_epochs, test_env=test_env, current_env_step=0)
-        #     print("Initial offline training complete")
+        # NEW: Populate validation buffer with offline data
+        agent.populate_val_buffer_from_offline()
+        wandb.log({"val_buffer_size": agent.val_replay_buffer.size}, step=0)
 
     # Initialize environment with gymnasium interface
-    # reset() now returns (observation, info) tuple
     o, info = env.reset(seed=env_seed)
     r, ep_ret, ep_len = 0, 0, 0
     terminated, truncated = False, False
+
+    # Track stabilization statistics
+    total_stabilization_triggers = 0
+    total_stabilization_epochs = 0
 
     for t in range(total_steps):
 
@@ -252,11 +268,35 @@ def SPEQ(env_name, seed=0, epochs=300, steps_per_epoch=1000,
         # We only want to mark as 'done' if truly terminated, not truncated
         d_store = terminated and not truncated
 
+        # Store in main buffer and probabilistically in validation buffer
         agent.store_data(o, a, r, o2, d_store)
 
-        # OFFLINE TRAINING: Pass current step for proper logging
-        if offline_frequency > 0 and (t + 1) % offline_frequency == 0:
-            agent.finetune_offline(epochs=offline_epochs, test_env=test_env, current_env_step=t+1)
+        # NEW: ADAPTIVE OFFLINE STABILIZATION TRIGGERING
+        if agent.check_should_trigger_offline_stabilization():
+            total_stabilization_triggers += 1
+            
+            # Log trigger information
+            wandb.log({
+                "stabilization_trigger": total_stabilization_triggers,
+                "buffer_size_at_trigger": agent.replay_buffer.size,
+                "next_trigger_size": agent.next_trigger_size
+            }, step=t+1)
+            
+            # Run offline stabilization with early stopping
+            epochs_performed = agent.finetune_offline(
+                epochs=offline_epochs, 
+                test_env=test_env, 
+                current_env_step=t+1
+            )
+            
+            total_stabilization_epochs += epochs_performed
+            
+            # Log stabilization statistics
+            wandb.log({
+                "stabilization_epochs_performed": epochs_performed,
+                "total_stabilization_epochs": total_stabilization_epochs,
+                "avg_epochs_per_stabilization": total_stabilization_epochs / total_stabilization_triggers
+            }, step=t+1)
 
         # ONLINE TRAINING: Pass current step for proper logging
         agent.train(logger, current_env_step=t+1)
@@ -279,7 +319,10 @@ def SPEQ(env_name, seed=0, epochs=300, steps_per_epoch=1000,
 
             # Evaluate agent performance
             test_rw = test_agent(agent, test_env, max_ep_len, logger)
-            wandb.log({"EvalReward": np.mean(test_rw)}, step=current_step)
+            wandb.log({
+                "EvalReward": np.mean(test_rw),
+                "val_buffer_size": agent.val_replay_buffer.size
+            }, step=current_step)
 
             # Bias evaluation if enabled
             if evaluate_bias:
@@ -332,13 +375,23 @@ def SPEQ(env_name, seed=0, epochs=300, steps_per_epoch=1000,
             logger.dump_tabular()
 
             sys.stdout.flush()
+    
+    # Final summary
+    print(f"\n{'='*80}")
+    print("TRAINING SUMMARY")
+    print(f"{'='*80}")
+    print(f"Total stabilization triggers: {total_stabilization_triggers}")
+    print(f"Total stabilization epochs: {total_stabilization_epochs}")
+    print(f"Average epochs per stabilization: {total_stabilization_epochs / max(1, total_stabilization_triggers):.1f}")
+    print(f"Final validation buffer size: {agent.val_replay_buffer.size}")
+    print(f"{'='*80}\n")
 
 
 if __name__ == '__main__':
     import argparse
 
     parser = argparse.ArgumentParser(
-        description="Train or evaluate SPEQ on MuJoCo environments",
+        description="Train or evaluate SPEQ on MuJoCo environments with adaptive triggering",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter
     )
 
@@ -358,7 +411,7 @@ if __name__ == '__main__':
     parser.add_argument(
         "--exp-name",
         type=str,
-        default="speq_o2o",
+        default="speq_o2o_adaptive",
         help="Experiment name (used for checkpoints, logs, etc.)"
     )
     parser.add_argument(
@@ -395,22 +448,50 @@ if __name__ == '__main__':
         help="Number of training epochs"
     )
     parser.add_argument(
-        "--offline-frequency",
-        type=int,
-        default=10_000,
-        help="Offline update frequency (in steps)"
-    )
-    parser.add_argument(
         "--offline-epochs",
         type=int,
         default=75_000,
-        help="Number of offline update epochs"
+        help="Maximum number of offline update epochs per stabilization"
     )
     parser.add_argument(
         "--utd",
         type=int,
         default=1,
         help="Update-to-data ratio"
+    )
+
+    # ─── NEW: Validation Parameters ───────────────────────────────────────────────
+    parser.add_argument(
+        "--val-buffer-prob",
+        type=float,
+        default=0.1,
+        help="Probability of adding online transitions to validation buffer"
+    )
+    parser.add_argument(
+        "--val-buffer-offline-frac",
+        type=float,
+        default=0.1,
+        help="Fraction of offline data to add to validation buffer"
+    )
+    parser.add_argument(
+        "--val-check-interval",
+        type=int,
+        default=1000,
+        help="Steps between validation checks during offline training"
+    )
+    parser.add_argument(
+        "--val-patience",
+        type=int,
+        default=5000,
+        help="Steps without validation improvement before early stopping"
+    )
+
+    # ─── NEW: Adaptive Triggering ─────────────────────────────────────────────────
+    parser.add_argument(
+        "--adaptive-trigger-rate",
+        type=float,
+        default=1.1,
+        help="Buffer growth rate for adaptive triggering (10%% = 1.1)"
     )
 
     # ─── Network & Optimization ────────────────────────────────────────────────────
@@ -432,12 +513,14 @@ if __name__ == '__main__':
         default=1e-4,
         help="Dropout rate for the target value network"
     )
+    
     # ─── Plasticity ─────────────────────────────────────────────────
     parser.add_argument(
         "--calc-plasticity",
         action="store_true",
         help="Calculate plasticity metrics during training"
     )
+    
     # ─── Minari Offline-to-Online ─────────────────────────────────────────────────
     parser.add_argument(
         "--use-minari",
@@ -457,16 +540,8 @@ if __name__ == '__main__':
         choices=['expert', 'medium', 'simple'],
         help="Dataset quality level (expert, medium, simple)"
     )
-    # parser.add_argument(
-    #     "--no-initial-offline-training",
-    #     dest="initial_offline_training",
-    #     action="store_false",
-    #     help="Skip initial offline training phase on Minari data"
-    # )
-    # parser.set_defaults(initial_offline_training=True)
 
     # ─── Boolean Toggles ──────────────────────────────────────────────────────────
-    # layer_norm defaults to True, but you can turn it off explicitly:
     parser.set_defaults(layer_norm=True)
     parser.add_argument(
         "--no-layer-norm",
@@ -481,8 +556,11 @@ if __name__ == '__main__':
     )
 
     args = parser.parse_args()
-
-    exp_name_full = args.exp_name + '_%s' % args.env + '_%s' % args.minari_quality 
+    if args.use_minari:
+        exp_name_full = args.exp_name + '_%s' % args.env + '_%s' % args.minari_quality
+    else:
+        exp_name_full = args.exp_name + '_%s' % args.env
+        
     args.data_dir = './runs/' + str(args.info) + '/'
     logger_kwargs = setup_logger_kwargs(exp_name_full, args.seed, args.data_dir)
 
@@ -501,12 +579,16 @@ if __name__ == '__main__':
          gpu_id=args.gpu_id,
          target_drop_rate=args.target_drop_rate,
          layer_norm=args.layer_norm,
-         offline_frequency=args.offline_frequency, num_Q=args.num_q,
+         num_Q=args.num_q,
          offline_epochs=args.offline_epochs,
          hidden_sizes=hidden_sizes,
          evaluate_bias=args.evaluate_bias,
          use_minari=args.use_minari,
          minari_dataset=args.minari_dataset,
          minari_quality=args.minari_quality,
-        #  initial_offline_training=args.initial_offline_training
+         val_buffer_prob=args.val_buffer_prob,
+         val_buffer_offline_frac=args.val_buffer_offline_frac,
+         val_check_interval=args.val_check_interval,
+         val_patience=args.val_patience,
+         adaptive_trigger_expansion_rate=args.adaptive_trigger_rate
          )

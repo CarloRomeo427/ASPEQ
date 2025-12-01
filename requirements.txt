@@ -1,12 +1,17 @@
 numpy>=1.24
 torch
 gymnasium
+gymnasium[mujoco]
 tensorboard
 wandb
+minari
+minari[hf]
+minari[hdf5]
+joblib
 
 # Packages required to build and run mujoco-py
 Cython==0.29.36
-mujoco-py==2.1.2.14
+# mujoco-py==2.1.2.14
 glfw==2.10.0
 imageio==2.37.2
 pillow==12.0.0
