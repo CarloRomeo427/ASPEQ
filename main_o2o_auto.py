@@ -409,166 +409,57 @@ if __name__ == '__main__':
     )
 
     # ─── Environment & Experiment ─────────────────────────────────────────────────
-    parser.add_argument(
-        "--env",
-        type=str,
-        default="Hopper-v5",
-        help="Gym environment name"
-    )
-    parser.add_argument(
-        "--seed",
-        type=int,
-        default=0,
-        help="Random seed for reproducibility"
-    )
-    parser.add_argument(
-        "--exp-name",
-        type=str,
-        default="speq_o2o_adaptive",
-        help="Experiment name (used for checkpoints, logs, etc.)"
-    )
-    parser.add_argument(
-        "--info",
-        type=str,
-        help="Path to experiment folder (for resuming or analysis)"
-    )
+    parser.add_argument("--env",type=str,default="Hopper-v5",help="Gym environment name")
+    parser.add_argument("--seed",type=int,default=0,help="Random seed for reproducibility")
+    parser.add_argument("--exp-name",type=str,default="speq_o2o_adaptive",help="Experiment name (used for checkpoints, logs, etc.)")
+    parser.add_argument("--info",type=str,help="Path to experiment folder (for resuming or analysis)")
 
     # ─── Logging & Debug ──────────────────────────────────────────────────────────
-    parser.add_argument(
-        "--debug",
-        action="store_true",
-        help="Enable debug mode (more verbose logging)"
-    )
-    parser.add_argument(
-        "--log-wandb",
-        action="store_true",
-        help="Log metrics to Weights & Biases"
-    )
+    parser.add_argument("--debug",action="store_true",help="Enable debug mode (more verbose logging)")
+    parser.add_argument("--log-wandb",action="store_true",help="Log metrics to Weights & Biases")
 
     # ─── Hardware ─────────────────────────────────────────────────────────────────
-    parser.add_argument(
-        "--gpu-id",
-        type=int,
-        default=0,
-        help="CUDA GPU device ID"
-    )
+    parser.add_argument("--gpu-id",type=int,default=0,help="CUDA GPU device ID")
 
     # ─── Training Parameters ──────────────────────────────────────────────────────
-    parser.add_argument(
-        "--epochs",
-        type=int,
-        default=300,
-        help="Number of training epochs"
-    )
-    parser.add_argument(
-        "--offline-epochs",
-        type=int,
-        default=75_000,
-        help="Maximum number of offline update epochs per stabilization"
-    )
-    parser.add_argument(
-        "--utd",
-        type=int,
-        default=1,
-        help="Update-to-data ratio"
-    )
+    parser.add_argument("--epochs",type=int,default=300,help="Number of training epochs")
+    parser.add_argument("--offline-epochs",type=int,default=75_000,help="Maximum number of offline update epochs per stabilization")
+    parser.add_argument("--utd",type=int,default=1,help="Update-to-data ratio")
 
     # ─── NEW: Validation Parameters ───────────────────────────────────────────────
-    parser.add_argument(
-        "--val-buffer-prob",
-        type=float,
-        default=0.1,
-        help="Probability of adding online transitions to validation buffer"
-    )
-    parser.add_argument(
-        "--val-buffer-offline-frac",
-        type=float,
-        default=0.1,
-        help="Fraction of offline data to add to validation buffer"
-    )
-    parser.add_argument(
-        "--val-check-interval",
-        type=int,
-        default=1000,
-        help="Steps between validation checks during offline training"
-    )
-    parser.add_argument(
-        "--val-patience",
-        type=int,
-        default=5000,
-        help="Steps without validation improvement before early stopping"
-    )
+    parser.add_argument("--val-buffer-prob",type=float,default=0.1,help="Probability of adding online transitions to validation buffer")
+    parser.add_argument("--val-buffer-offline-frac",type=float,default=0.1,help="Fraction of offline data to add to validation buffer")
+    parser.add_argument("--val-check-interval",type=int,default=1000,help="Steps between validation checks during offline training")
+    parser.add_argument("--val-patience",type=int,default=5000,help="Steps without validation improvement before early stopping")
 
     # ─── NEW: Adaptive Triggering ─────────────────────────────────────────────────
-    parser.add_argument(
-        "--adaptive-trigger-rate",
-        type=float,
-        default=1.1,
-        help="Buffer growth rate for adaptive triggering (10%% = 1.1)"
-    )
+    parser.add_argument("--adaptive-trigger-rate",type=float,default=1.1,help="Buffer growth rate for adaptive triggering (10%% = 1.1)")
 
     # ─── Network & Optimization ────────────────────────────────────────────────────
-    parser.add_argument(
-        "--network-width",
-        type=int,
-        default=256,
-        help="Hidden units per layer"
-    )
-    parser.add_argument(
-        "--num-q",
-        type=int,
-        default=2,
-        help="Number of Q-networks (for ensembles)"
-    )
-    parser.add_argument(
-        "--target-drop-rate",
-        type=float,
-        default=999.0,
-        help="Dropout rate for the target value network"
-    )
+    parser.add_argument("--network-width",type=int,default=256,help="Hidden units per layer")
+    parser.add_argument("--num-q",type=int,default=2,help="Number of Q-networks (for ensembles)")
+    parser.add_argument("--target-drop-rate",type=float,default=999.0,help="Dropout rate for the target value network")
     
     # ─── Plasticity ─────────────────────────────────────────────────
-    parser.add_argument(
-        "--calc-plasticity",
-        action="store_true",
-        help="Calculate plasticity metrics during training"
-    )
+    parser.add_argument("--calc-plasticity",action="store_true",help="Calculate plasticity metrics during training")
     
     # ─── Minari Offline-to-Online ─────────────────────────────────────────────────
-    parser.add_argument(
-        "--use-minari",
-        action="store_true",
-        help="Load Minari dataset for offline-to-online training"
-    )
-    parser.add_argument(
-        "--minari-dataset",
-        type=str,
-        default=None,
-        help="Specific Minari dataset name (e.g., 'mujoco/hopper/expert-v0'). If None, auto-generates from env name and quality"
-    )
-    parser.add_argument(
-        "--minari-quality",
-        type=str,
-        default='expert',
-        choices=['expert', 'medium', 'simple'],
-        help="Dataset quality level (expert, medium, simple)"
-    )
+    parser.add_argument("--use-minari",action="store_true",help="Load Minari dataset for offline-to-online training")
+    parser.add_argument("--minari-dataset",type=str,default=None,help="Specific Minari dataset name")
+    parser.add_argument("--minari-quality",type=str,default='expert',choices=['expert', 'medium', 'simple'],help="Dataset quality level (expert, medium, simple)")
 
     # ─── Boolean Toggles ──────────────────────────────────────────────────────────
     parser.set_defaults(layer_norm=True)
-    parser.add_argument(
-        "--no-layer-norm",
-        dest="layer_norm",
-        action="store_false",
-        help="Disable layer normalization in the networks"
-    )
-    parser.add_argument(
-        "--evaluate-bias",
-        action="store_true",
-        help="Evaluate policy bias during training"
-    )
+    parser.add_argument("--no-layer-norm",dest="layer_norm",action="store_false",help="Disable layer normalization in the networks")
+    parser.add_argument("--evaluate-bias",action="store_true",help="Evaluate policy bias during training")
 
     args = parser.parse_args()
+
+    def set_parameters(name_algo):
+        
+
+
+
     if args.use_minari:
         exp_name_full = args.exp_name + '_%s' % args.env + '_%s' % args.minari_quality
     else:
