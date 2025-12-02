@@ -480,6 +480,7 @@ if __name__ == '__main__':
 
     def set_algo_params(args):
         params = {
+            'exp_name': exp_name_full,
             'seed': args.seed,
             'env': args.env,
             'epochs': args.epochs,
