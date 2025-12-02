@@ -1,4 +1,4 @@
-### AGENT CODE FOR SPEQ ALGORITHM 
+### AGENT CODE FOR SPEQ ALGORITHM WITH VALIDATION BUFFER AND ADAPTIVE TRIGGERING
 
 
 import copy
@@ -134,8 +134,21 @@ class Agent(object):
                  start_steps=5000, delay_update_steps='auto',
                  utd_ratio=1, num_Q=2, num_min=2, q_target_mode='min',
                  policy_update_delay=20, 
-                 target_drop_rate=0.0, layer_norm=False, o2o=False
+                 target_drop_rate=0.0, layer_norm=False, o2o=False,
+                 val_buffer_prob=0.1, val_buffer_offline_frac=0.1,
+                 val_check_interval=1000, val_patience=5000,
+                 adaptive_trigger_expansion_rate=1.1, auto_stab=False
                  ):
+        """
+        SPEQ Agent with validation buffer and adaptive offline stabilization triggering.
+        
+        New parameters:
+            val_buffer_prob: Probability of adding online transitions to validation buffer (default: 0.1)
+            val_buffer_offline_frac: Fraction of offline data to add to validation buffer (default: 0.1)
+            val_check_interval: Steps between validation checks during offline training (default: 1000)
+            val_patience: Steps without validation improvement before early stopping (default: 5000)
+            adaptive_trigger_expansion_rate: Buffer growth rate for adaptive triggering (default: 1.1)
+        """
         self.policy_net = TanhGaussianPolicy(obs_dim, act_dim, (256, 256), action_limit=act_limit).to(device)
         self.q_net_list, self.q_target_net_list = [], []
         for q_i in range(num_Q):
@@ -168,8 +181,14 @@ class Agent(object):
         else:
             self.alpha = alpha
             self.target_entropy, self.log_alpha, self.alpha_optim = None, None, None
+        
+        # Main replay buffers
         self.replay_buffer = ReplayBuffer(obs_dim=obs_dim, act_dim=act_dim, size=replay_size)
         self.replay_buffer_offline = ReplayBuffer(obs_dim=obs_dim, act_dim=act_dim, size=replay_size)
+        
+        # NEW: Validation replay buffer
+        self.val_replay_buffer = ReplayBuffer(obs_dim=obs_dim, act_dim=act_dim, size=int(replay_size * 0.2))
+        
         self.mse_criterion = nn.MSELoss()
         self.start_steps = start_steps
         self.obs_dim = obs_dim
@@ -191,6 +210,18 @@ class Agent(object):
         self.device = device
         self.target_drop_rate = target_drop_rate
         self.layer_norm = layer_norm
+        
+        # NEW: Validation and adaptive triggering parameters
+        self.val_buffer_prob = val_buffer_prob
+        self.val_buffer_offline_frac = val_buffer_offline_frac
+        self.val_check_interval = val_check_interval
+        self.val_patience = val_patience
+        self.adaptive_trigger_expansion_rate = adaptive_trigger_expansion_rate
+        
+        # NEW: Adaptive triggering state
+        self.last_trigger_buffer_size = start_steps
+        self.next_trigger_size = int(start_steps * adaptive_trigger_expansion_rate)
+        self.auto_stab = auto_stab
         
         # Effective rank monitor
         self.effective_rank_monitor = EffectiveRankMonitor()
@@ -243,10 +274,81 @@ class Agent(object):
         return average_q_prediction
 
     def store_data(self, o, a, r, o2, d):
+        """
+        Store data in main replay buffer and probabilistically in validation buffer.
+        
+        Args:
+            o: observation
+            a: action
+            r: reward
+            o2: next observation
+            d: done flag
+        """
+        # Always store in main buffer
         self.replay_buffer.store(o, a, r, o2, d)
+        
+        # NEW: Probabilistically store in validation buffer
+        if np.random.rand() < self.val_buffer_prob:
+            self.val_replay_buffer.store(o, a, r, o2, d)
 
     def store_data_offline(self, o, a, r, o2, d):
+        """Store offline data in offline buffer."""
         self.replay_buffer_offline.store(o, a, r, o2, d)
+
+    def populate_val_buffer_from_offline(self):
+        """
+        NEW: Populate validation buffer with a fraction of offline data.
+        Called once after loading offline dataset.
+        """
+        if self.replay_buffer_offline.size == 0:
+            return
+        
+        num_samples = int(self.replay_buffer_offline.size * self.val_buffer_offline_frac)
+        print(f"Adding {num_samples} offline samples to validation buffer...")
+        
+        # Sample without replacement from offline buffer
+        all_data = self.replay_buffer_offline.sample_all()
+        indices = np.random.choice(self.replay_buffer_offline.size, 
+                                   size=min(num_samples, self.replay_buffer_offline.size), 
+                                   replace=False)
+        
+        for idx in indices:
+            self.val_replay_buffer.store(
+                all_data['obs1'][idx],
+                all_data['acts'][idx],
+                all_data['rews'][idx],
+                all_data['obs2'][idx],
+                all_data['done'][idx]
+            )
+        
+        print(f"Validation buffer now contains {self.val_replay_buffer.size} samples")
+
+    def check_should_trigger_offline_stabilization(self):
+        """
+        NEW: Check if offline stabilization should be triggered based on 10% buffer growth.
+        
+        Returns:
+            bool: True if stabilization should be triggered
+        """
+        current_size = self.replay_buffer.size
+
+        if self.val_replay_buffer.size < 1000 and not self.auto_stab:
+            return False
+        
+        if current_size >= self.next_trigger_size:
+            # Update trigger thresholds
+            self.last_trigger_buffer_size = current_size
+            self.next_trigger_size = int(current_size * self.adaptive_trigger_expansion_rate)
+            
+            print(f"\n{'='*80}")
+            print(f"OFFLINE STABILIZATION TRIGGERED")
+            print(f"Current buffer size: {current_size}")
+            print(f"Next trigger at: {self.next_trigger_size}")
+            print(f"{'='*80}\n")
+            
+            return True
+        
+        return False
 
     def sample_data(self, batch_size):
         batch = self.replay_buffer.sample_batch(batch_size)
@@ -259,7 +361,7 @@ class Agent(object):
     
     def sample_data_mix(self, batch_size):
         batch_online = self.replay_buffer.sample_batch(batch_size)
-        batch_offline = self.replay_buffer.sample_batch(batch_size)
+        batch_offline = self.replay_buffer_offline.sample_batch(batch_size)
 
         batch = {
             'obs1': np.concatenate([batch_online['obs1'], batch_offline['obs1']], axis=0),
@@ -278,183 +380,89 @@ class Agent(object):
 
     def get_td_error(self):
         with torch.no_grad():
-            batch = self.replay_buffer.sample_all()
-            result = np.zeros([1, len(batch['obs1'])])
-            for i in range(0, len(batch['obs1']), 1000):
-                obs_tensor = Tensor(batch['obs1'][i:i + 1000]).to(self.device)
-                obs_next_tensor = Tensor(batch['obs2'][i:i + 1000]).to(self.device)
-                acts_tensor = Tensor(batch['acts'][i:i + 1000]).to(self.device)
-                rews_tensor = Tensor(batch['rews'][i:i + 1000]).unsqueeze(1).to(self.device)
-                done_tensor = Tensor(batch['done'][i:i + 1000]).unsqueeze(1).to(self.device)
+            batch = self.replay_buffer.sample_batch(1)
+            obs_tensor = Tensor(batch['obs1']).to(self.device)
+            obs_next_tensor = Tensor(batch['obs2']).to(self.device)
+            acts_tensor = Tensor(batch['acts']).to(self.device)
+            rews_tensor = Tensor(batch['rews']).unsqueeze(1).to(self.device)
+            done_tensor = Tensor(batch['done']).unsqueeze(1).to(self.device)
 
-                y_q, sample_idxs = self.get_redq_q_target_no_grad(obs_next_tensor, rews_tensor, done_tensor)
-                q_prediction_list = []
-                for q_i in range(self.num_Q):
-                    q_prediction = self.q_net_list[q_i](torch.cat([obs_tensor, acts_tensor], 1))
-                    q_prediction_list.append(q_prediction)
-                q_prediction_cat = torch.cat(q_prediction_list, dim=1)
-                y_q = y_q.expand((-1, self.num_Q)) if y_q.shape[1] == 1 else y_q
-                q_loss_all = ((q_prediction_cat - y_q) ** 2).mean(1)
-                result[0, i:i + 1000] = q_loss_all.cpu().numpy()
-
-        return result
+            y_q, sample_idxs = self.get_redq_q_target_no_grad(obs_next_tensor, rews_tensor, done_tensor)
+            q_prediction = self.q_net_list[0](torch.cat([obs_tensor, acts_tensor], 1))
+            td_error = (y_q - q_prediction).abs().item()
+        return td_error
 
     def get_redq_q_target_no_grad(self, obs_next_tensor, rews_tensor, done_tensor):
-        num_mins_to_use = get_probabilistic_num_min(self.num_min)
-        sample_idxs = np.random.choice(self.num_Q, num_mins_to_use, replace=False)
         with torch.no_grad():
+            a_tilda_next, _, _, log_prob_a_tilda_next, _, _ = self.policy_net.forward(obs_next_tensor)
+            q_prediction_next_list = []
+            for q_i in range(self.num_Q):
+                q_prediction_next = self.q_target_net_list[q_i](torch.cat([obs_next_tensor, a_tilda_next], 1))
+                q_prediction_next_list.append(q_prediction_next)
+            q_prediction_next_cat = torch.cat(q_prediction_next_list, 1)
+            
+            sample_idxs = None  # <-- ADD THIS LINE
+            
             if self.q_target_mode == 'min':
-                a_tilda_next, _, _, log_prob_a_tilda_next, _, _ = self.policy_net.forward(obs_next_tensor)
-                q_prediction_next_list = []
-                for sample_idx in sample_idxs:
-                    q_prediction_next = self.q_target_net_list[sample_idx](
-                        torch.cat([obs_next_tensor, a_tilda_next], 1))
-                    q_prediction_next_list.append(q_prediction_next)
-                q_prediction_next_cat = torch.cat(q_prediction_next_list, 1)
-                min_q, min_indices = torch.min(q_prediction_next_cat, dim=1, keepdim=True)
-                next_q_with_log_prob = min_q - self.alpha * log_prob_a_tilda_next
-                y_q = rews_tensor + self.gamma * (1 - done_tensor) * next_q_with_log_prob
-            if self.q_target_mode == 'ave':
-                a_tilda_next, _, _, log_prob_a_tilda_next, _, _ = self.policy_net.forward(obs_next_tensor)
-                q_prediction_next_list = []
-                for q_i in range(self.num_Q):
-                    q_prediction_next = self.q_target_net_list[q_i](torch.cat([obs_next_tensor, a_tilda_next], 1))
-                    q_prediction_next_list.append(q_prediction_next)
-                q_prediction_next_ave = torch.cat(q_prediction_next_list, 1).mean(dim=1).reshape(-1, 1)
-                next_q_with_log_prob = q_prediction_next_ave - self.alpha * log_prob_a_tilda_next
-                y_q = rews_tensor + self.gamma * (1 - done_tensor) * next_q_with_log_prob
-            if self.q_target_mode == 'rem':
-                a_tilda_next, _, _, log_prob_a_tilda_next, _, _ = self.policy_net.forward(obs_next_tensor)
-                q_prediction_next_list = []
-                for q_i in range(self.num_Q):
-                    q_prediction_next = self.q_target_net_list[q_i](torch.cat([obs_next_tensor, a_tilda_next], 1))
-                    q_prediction_next_list.append(q_prediction_next)
-                q_prediction_next_cat = torch.cat(q_prediction_next_list, 1)
-                rem_weight = Tensor(np.random.uniform(0, 1, q_prediction_next_cat.shape)).to(device=self.device)
-                normalize_sum = rem_weight.sum(1).reshape(-1, 1).expand(-1, self.num_Q)
-                rem_weight = rem_weight / normalize_sum
-                q_prediction_next_rem = (q_prediction_next_cat * rem_weight).sum(dim=1).reshape(-1, 1)
-                next_q_with_log_prob = q_prediction_next_rem - self.alpha * log_prob_a_tilda_next
-                y_q = rews_tensor + self.gamma * (1 - done_tensor) * next_q_with_log_prob
+                q_target = torch.min(q_prediction_next_cat, 1, keepdim=True)[0]
+            elif self.q_target_mode == 'ave':
+                q_target = torch.mean(q_prediction_next_cat, 1, keepdim=True)
+            elif self.q_target_mode == 'rem':
+                num_mins_to_use = int(self.num_min)
+                sample_idxs = np.random.choice(self.num_Q, num_mins_to_use, replace=False)
+                q_prediction_next_cat_min = q_prediction_next_cat[:, sample_idxs]
+                q_target = torch.min(q_prediction_next_cat_min, 1, keepdim=True)[0]
+            else:
+                num_mins_to_use = get_probabilistic_num_min(self.num_min)
+                sample_idxs = np.random.choice(self.num_Q, num_mins_to_use, replace=False)
+                q_prediction_next_cat_min = q_prediction_next_cat[:, sample_idxs]
+                q_target = torch.min(q_prediction_next_cat_min, 1, keepdim=True)[0]
+            y_q = rews_tensor + self.gamma * (1 - done_tensor) * (
+                    q_target - self.alpha * log_prob_a_tilda_next
+            )
         return y_q, sample_idxs
 
-    def compute_effective_rank_metrics(self, batch_size=128):
-        """
-        Compute effective rank and gradient diversity metrics for Q-networks and policy.
-        This is computationally expensive, so call it periodically (e.g., every 1000-5000 steps).
-        
-        Returns:
-            Dictionary with metrics for Q1, Q2, and policy networks
-        """
+    def compute_effective_rank_metrics(self, batch_size=256):
+        """Compute effective rank metrics for Q-networks."""
         metrics = {}
         
-        # Sample a batch
-        if self.o2o:
-            obs_tensor, obs_next_tensor, acts_tensor, rews_tensor, done_tensor = self.sample_data_mix(batch_size)
-        else:
-            obs_tensor, obs_next_tensor, acts_tensor, rews_tensor, done_tensor = self.sample_data(batch_size)
-        
-        # ========== Q-Network Metrics ==========
-        for q_i in range(self.num_Q):
-            q_net = self.q_net_list[q_i]
+        for q_idx, q_net in enumerate(self.q_net_list):
+            batch = self.replay_buffer.sample_batch(batch_size)
+            obs_tensor = torch.Tensor(batch['obs1']).to(self.device)
+            acts_tensor = torch.Tensor(batch['acts']).to(self.device)
             
-            # Compute per-example gradients for Q-network
-            per_example_grads = []
+            # Get per-example gradients
+            q_net.zero_grad()
+            inputs = torch.cat([obs_tensor, acts_tensor], 1)
+            inputs.requires_grad = True
             
+            outputs = q_net(inputs)
+            
+            # Compute gradients for each sample
+            gradients = []
             for i in range(batch_size):
-                # Single example
-                obs_i = obs_tensor[i:i+1]
-                acts_i = acts_tensor[i:i+1]
-                obs_next_i = obs_next_tensor[i:i+1]
-                rews_i = rews_tensor[i:i+1]
-                done_i = done_tensor[i:i+1]
+                q_net.zero_grad()
+                if inputs.grad is not None:
+                    inputs.grad.zero_()
+                outputs[i].backward(retain_graph=True)
+                if inputs.grad is not None:
+                    gradients.append(inputs.grad[i].flatten())
+            
+            if gradients:
+                gradient_matrix = torch.stack(gradients).T
+                rank_metrics = self.effective_rank_monitor.compute_gradient_metrics(gradient_matrix)
                 
-                # Compute Q-loss for this example
-                y_q, _ = self.get_redq_q_target_no_grad(obs_next_i, rews_i, done_i)
-                q_pred = q_net(torch.cat([obs_i, acts_i], 1))
-                loss = F.mse_loss(q_pred, y_q)
-                
-                # Compute gradients
-                self.q_optimizer_list[q_i].zero_grad()
-                loss.backward(retain_graph=False)
-                
-                # Collect gradients
-                grad_vec = []
-                for param in q_net.parameters():
-                    if param.grad is not None:
-                        grad_vec.append(param.grad.flatten().detach())
-                
-                if len(grad_vec) > 0:
-                    per_example_grads.append(torch.cat(grad_vec))
-            
-            # Stack into gradient matrix (num_params x batch_size)
-            if len(per_example_grads) > 0:
-                gradient_matrix = torch.stack(per_example_grads, dim=1)
-                
-                # Compute metrics
-                q_metrics = self.effective_rank_monitor.compute_gradient_metrics(gradient_matrix)
-                metrics[f'Q{q_i+1}_effective_rank'] = q_metrics['effective_rank']
-                metrics[f'Q{q_i+1}_condition_number'] = q_metrics['condition_number']
-                metrics[f'Q{q_i+1}_spectral_norm'] = q_metrics['spectral_norm']
-                metrics[f'Q{q_i+1}_stable_rank'] = q_metrics['stable_rank']
-            
-            # Zero out gradients
-            self.q_optimizer_list[q_i].zero_grad()
-        
-        # ========== Policy Network Metrics ==========
-        per_example_policy_grads = []
-        
-        for i in range(batch_size):
-            obs_i = obs_tensor[i:i+1]
-            
-            # Compute policy loss for this example
-            a_tilda, _, _, log_prob_a_tilda, _, _ = self.policy_net.forward(obs_i)
-            
-            # Get Q-values for policy gradient
-            q_list = []
-            for q_net in self.q_net_list:
-                with torch.no_grad():
-                    q_val = q_net(torch.cat([obs_i, a_tilda], 1))
-                    q_list.append(q_val)
-            
-            ave_q = torch.mean(torch.cat(q_list, 1), dim=1, keepdim=True)
-            policy_loss = (self.alpha * log_prob_a_tilda - ave_q)
-            
-            # Compute gradients
-            self.policy_optimizer.zero_grad()
-            policy_loss.backward(retain_graph=False)
-            
-            # Collect gradients
-            grad_vec = []
-            for param in self.policy_net.parameters():
-                if param.grad is not None:
-                    grad_vec.append(param.grad.flatten().detach())
-            
-            if len(grad_vec) > 0:
-                per_example_policy_grads.append(torch.cat(grad_vec))
-        
-        # Stack into gradient matrix
-        if len(per_example_policy_grads) > 0:
-            policy_gradient_matrix = torch.stack(per_example_policy_grads, dim=1)
-            
-            # Compute metrics
-            policy_metrics = self.effective_rank_monitor.compute_gradient_metrics(policy_gradient_matrix)
-            metrics['policy_effective_rank'] = policy_metrics['effective_rank']
-            metrics['policy_condition_number'] = policy_metrics['condition_number']
-            metrics['policy_spectral_norm'] = policy_metrics['spectral_norm']
-            metrics['policy_stable_rank'] = policy_metrics['stable_rank']
-        
-        # Zero out gradients
-        self.policy_optimizer.zero_grad()
+                for key, value in rank_metrics.items():
+                    metrics[f'q{q_idx}_{key}'] = value
         
         return metrics
 
     def train(self, logger, current_env_step=None):
         """
-        Train the agent for one step.
+        Standard online training update.
         
         Args:
-            logger: Logger object for storing training metrics
+            logger: Logger object for storing metrics
             current_env_step: Current environment step for wandb logging (optional)
         """
         num_update = 0 if self.__get_current_num_data() <= self.delay_update_steps else self.utd_ratio
@@ -536,13 +544,20 @@ class Agent(object):
         weight = torch.where(diff > 0, expectile, (1 - expectile))
         return weight * (diff ** 2)
 
-    
     def evaluate_validation_loss(self, batch_size=256):
         """
-        Evaluate Q-loss on the entire validation replay buffer by iterating over it in batches.
-        Returns the average Q-loss across all validation data.
+        NEW: Evaluate Q-loss on validation buffer.
+        
+        Args:
+            batch_size: Batch size for evaluation
+            
+        Returns:
+            Average validation loss across all samples
         """
-        val_data = self.replay_buffer.sample_all()
+        if self.val_replay_buffer.size == 0:
+            return 0.0
+        
+        val_data = self.val_replay_buffer.sample_all()
         obs_full = val_data['obs1']
         obs_next_full = val_data['obs2']
         acts_full = val_data['acts']
@@ -551,7 +566,7 @@ class Agent(object):
 
         num_samples = len(obs_full)
         if num_samples == 0:
-            return 0.0  # No validation data available
+            return 0.0
 
         num_batches = (num_samples + batch_size - 1) // batch_size
         total_loss = 0.0
@@ -579,6 +594,118 @@ class Agent(object):
 
         average_loss = total_loss / num_batches
         return average_loss
+
+    def finetune_offline_auto(self, epochs, test_env=None, current_env_step=None):
+        """ 
+        NEW: Finetune with validation-based early stopping.
+        
+        Args:
+            epochs: Maximum number of offline training epochs
+            test_env: Environment for evaluation (optional)
+            current_env_step: Current environment step for wandb logging
+            
+        Returns:
+            Number of epochs actually performed (may be less than max if early stopped)
+        """
+        print(f"\nStarting offline stabilization (max {epochs} epochs)...")
+        
+        # Log initial validation loss
+        initial_loss = self.evaluate_validation_loss()
+        best_val_loss = initial_loss
+        steps_without_improvement = 0
+        
+        if current_env_step is not None:
+            wandb.log({
+                "ValLoss": initial_loss,
+                "offline_training": 1
+            }, step=current_env_step)
+        
+        print(f"Initial validation loss: {initial_loss:.4f}")
+       
+        for e in range(epochs):
+            # NEW: Check validation loss at regular intervals
+            if e > 0 and e % self.val_check_interval == 0:
+                val_loss = self.evaluate_validation_loss()
+                
+                if current_env_step is not None:
+                    wandb.log({
+                        "ValLoss": val_loss,
+                        "offline_epoch": e,
+                        "offline_training": 1
+                    }, step=current_env_step)
+                
+                # NEW: Early stopping logic
+                if val_loss < best_val_loss * 0.999:  # 0.1% improvement threshold
+                    best_val_loss = val_loss
+                    steps_without_improvement = 0
+                    print(f"Epoch {e}: Val loss improved to {val_loss:.4f}")
+                else:
+                    steps_without_improvement += self.val_check_interval
+                    print(f"Epoch {e}: Val loss {val_loss:.4f} (no improvement for {steps_without_improvement} steps)")
+                
+                # NEW: Stop if no improvement for val_patience steps
+                if steps_without_improvement >= self.val_patience:
+                    print(f"\nEarly stopping at epoch {e}: No improvement for {steps_without_improvement} steps")
+                    print(f"Best validation loss: {best_val_loss:.4f}")
+                    if current_env_step is not None:
+                        wandb.log({
+                            "offline_early_stop_epoch": e,
+                            "offline_training": 0
+                        }, step=current_env_step)
+                    return e
+            
+            # Evaluate on test environment every 5000 epochs
+            if test_env and (e + 1) % 5000 == 0:
+                test_rw = test_agent(self, test_env, 1000, None)
+                if current_env_step is not None:
+                    wandb.log({
+                        "OfflineEvalReward": np.mean(test_rw),
+                        "offline_training": 1
+                    }, step=current_env_step)
+            
+            # Sample data and train
+            if self.o2o:
+                obs_tensor, obs_next_tensor, acts_tensor, rews_tensor, done_tensor = self.sample_data_mix(
+                    self.batch_size)
+            else:
+                obs_tensor, obs_next_tensor, acts_tensor, rews_tensor, done_tensor = self.sample_data(
+                self.batch_size)
+            
+            """Q loss with expectile loss"""
+            y_q, sample_idxs = self.get_redq_q_target_no_grad(obs_next_tensor, rews_tensor, done_tensor)
+            q_prediction_list = []
+            for q_i in range(self.num_Q):
+                q_prediction = self.q_net_list[q_i](torch.cat([obs_tensor, acts_tensor], 1))
+                q_prediction_list.append(q_prediction)
+            q_prediction_cat = torch.cat(q_prediction_list, dim=1)
+            y_q = y_q.expand((-1, self.num_Q)) if y_q.shape[1] == 1 else y_q
+            q_loss_all = self.expectile_loss(q_prediction_cat - y_q,).mean() * self.num_Q
+
+            # Update Q-networks
+            for q_i in range(self.num_Q):
+                self.q_optimizer_list[q_i].zero_grad()
+            q_loss_all.backward()
+
+            for q_i in range(self.num_Q):
+                self.q_optimizer_list[q_i].step()
+
+            # Update target networks
+            for q_i in range(self.num_Q):
+                soft_update_model1_with_model2(self.q_target_net_list[q_i], self.q_net_list[q_i],
+                                                self.polyak)
+        
+        # Log completion
+        final_val_loss = self.evaluate_validation_loss()
+        print(f"\nOffline stabilization completed: {epochs} epochs")
+        print(f"Final validation loss: {final_val_loss:.4f}")
+        
+        if current_env_step is not None:
+            wandb.log({
+                "ValLoss": final_val_loss,
+                "offline_training": 0
+            }, step=current_env_step)
+        
+        return epochs
 
     def finetune_offline(self, epochs, test_env=None, current_env_step=None):
         """ 
