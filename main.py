@@ -473,19 +473,21 @@ if __name__ == '__main__':
 
     hidden_sizes = (args.network_width, args.network_width)
 
-    wandb.init(
-        name=f'{exp_name_full}',
-        project="SPEQ",
-        config=args,
-        mode='online' if args.log_wandb else 'disabled',
-        save_code=True
-    )
+    
 
     auto_dropout = set_dropout(args.env, args.target_drop_rate)
 
 
     def set_algo_params(args):
         params = {
+            'seed': args.seed,
+            'env': args.env,
+            'epochs': args.epochs,
+            'gpu_id': args.gpu_id,
+            'debug': args.debug,
+            'evaluate_bias': False,
+            'layer_norm': True,
+            'hidden_sizes': (256, 256),
             'num_q': 2,
             'offline_epochs': 0,
             'offline_frequency': 0,
@@ -555,15 +557,26 @@ if __name__ == '__main__':
 
     params = set_algo_params(args) 
 
-    SPEQ(args.env, seed=args.seed, epochs=args.epochs,
-         logger_kwargs=logger_kwargs, debug=args.debug,
-         gpu_id=args.gpu_id,
+    wandb.init(
+        name=f'{exp_name_full}',
+        project="SPEQ",
+        config=params,
+        mode='online' if args.log_wandb else 'disabled',
+        save_code=True
+    )
+
+    SPEQ(env_name=params['env'], 
+         seed=params['seed'], 
+         epochs=params['epochs'],
+         logger_kwargs=logger_kwargs, 
+         debug=params['debug'],
+         gpu_id=params['gpu_id'],
          target_drop_rate=params['dropout'],
-         layer_norm=args.layer_norm,
+         layer_norm=params['layer_norm'],
          num_Q=params['num_q'],
          offline_epochs=params['offline_epochs'],
-         hidden_sizes=hidden_sizes,
-         evaluate_bias=args.evaluate_bias,
+         hidden_sizes=params['hidden_sizes'],
+         evaluate_bias=params['evaluate_bias'],
          use_minari=params['use_minari'],
          minari_quality=params['minari_quality'],
          val_buffer_prob=params['val_buffer_prob'],
