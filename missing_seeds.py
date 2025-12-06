@@ -178,13 +178,13 @@ if __name__ == "__main__":
     entity = "carlo-romeo-alt427"
     project = "SPEQ"
     
-    algorithms = ["aspeq", "speq"]
+    algorithms = ["aspeq", "speq", "droq", "sac"]
     environments = [
         "Humanoid-v5", "Walker2d-v5", "HalfCheetah-v5", "Ant-v5", 
         "Hopper-v5", "InvertedPendulum-v5", "InvertedDoublePendulum-v5", 
         "Reacher-v5", "Swimmer-v5", "Pusher-v5"
     ]
-    seeds = [0, 42, 1234, 5678]  # List of expected seeds
+    seeds = [0, 42, 1234, 5678, 777, 9876, 13579, 31415, 24680, 27182]  # List of expected seeds
     
     # Check completeness
     results, expected_points = check_run_completeness(
