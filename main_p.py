@@ -9,7 +9,7 @@ import sys
 import wandb
 import minari
 
-from src.algos.agent import Agent
+from src.algos.agent_p import Agent
 from src.algos.core import mbpo_epoches, test_agent
 from src.utils.run_utils import setup_logger_kwargs
 from src.utils.bias_utils import log_bias_evaluation
@@ -152,7 +152,7 @@ def SPEQ(env_name, seed=0, epochs=300, steps_per_epoch=1000,
          offline_epochs=100, use_minari=False, minari_quality='expert',
          val_buffer_prob=0.1, val_buffer_offline_frac=0.1,
          val_check_interval=1000, val_patience=5000,
-         adaptive_trigger_expansion_rate=1.1, auto_stab=False
+         adaptive_trigger_expansion_rate=1.1, auto_stab=False, policy_based=False
          ):
     """
     SPEQ with adaptive offline stabilization triggering.
@@ -163,6 +163,7 @@ def SPEQ(env_name, seed=0, epochs=300, steps_per_epoch=1000,
         val_check_interval: Steps between validation checks during offline training (default: 1000)
         val_patience: Steps without validation improvement before early stopping (default: 5000)
         adaptive_trigger_expansion_rate: Buffer growth rate for adaptive triggering (default: 1.1)
+        policy_based: If True, monitor policy loss instead of Q loss (PASPEQ/APASPEQ) (default: False)
     """
     if debug:
         hidden_sizes = [2, 2]
@@ -292,20 +293,37 @@ def SPEQ(env_name, seed=0, epochs=300, steps_per_epoch=1000,
                 "next_trigger_size": agent.next_trigger_size
             }, step=t+1)
             
-            # Run offline stabilization with early stopping
-
-            if auto_stab:
-                epochs_performed = agent.finetune_offline_auto(
-                    epochs=offline_epochs, 
-                    test_env=test_env, 
-                    current_env_step=t+1
-                )
+            # Run offline stabilization - choose method based on algorithm type
+            if policy_based:
+                # PASPEQ/APASPEQ: Monitor policy loss with fixed policy
+                if auto_stab:
+                    # APASPEQ: Use validation set
+                    epochs_performed = agent.finetune_offline_policy_auto(
+                        epochs=offline_epochs, 
+                        test_env=test_env, 
+                        current_env_step=t+1
+                    )
+                else:
+                    # PASPEQ: Use training buffer
+                    epochs_performed = agent.finetune_offline_policy(
+                        epochs=offline_epochs, 
+                        test_env=test_env, 
+                        current_env_step=t+1
+                    )
             else:
-                epochs_performed = agent.finetune_offline(
-                    epochs=offline_epochs, 
-                    test_env=test_env, 
-                    current_env_step=t+1
-                )
+                # SPEQ/ASPEQ: Monitor Q loss
+                if auto_stab:
+                    epochs_performed = agent.finetune_offline_auto(
+                        epochs=offline_epochs, 
+                        test_env=test_env, 
+                        current_env_step=t+1
+                    )
+                else:
+                    epochs_performed = agent.finetune_offline(
+                        epochs=offline_epochs, 
+                        test_env=test_env, 
+                        current_env_step=t+1
+                    )
             total_stabilization_epochs += epochs_performed
             
             # Log stabilization statistics
@@ -413,7 +431,7 @@ if __name__ == '__main__':
     )
 
     # ─── Environment & Experiment ─────────────────────────────────────────────────
-    parser.add_argument("--algo",type=str, default="sac",choices=["sac", "droq", "speq", "aspeq", "speq_o2o", "aspeq_o2o", "redq", "rlpd"],help="RL algorithm to use")
+    parser.add_argument("--algo",type=str, default="sac",choices=["sac", "droq", "speq", "aspeq", "speq_o2o", "aspeq_o2o", "paspeq", "apaspeq", "paspeq_o2o", "apaspeq_o2o", "redq", "rlpd"],help="RL algorithm to use")
     parser.add_argument("--env",type=str,default="Hopper-v5",help="Gym environment name")
     parser.add_argument("--seed",type=int,default=0,help="Random seed for reproducibility")
     parser.add_argument("--exp-name",type=str,default="speq_o2o_adaptive",help="Experiment name (used for checkpoints, logs, etc.)")
@@ -501,7 +519,8 @@ if __name__ == '__main__':
             'dropout': 0.0,
             'use_minari': False,
             'minari_quality': 'expert',
-            'auto_stab': False
+            'auto_stab': False,
+            'policy_based': False
         }
         name_algo = args.algo.lower()
         if name_algo == "sac":
@@ -553,6 +572,48 @@ if __name__ == '__main__':
             params['minari_quality'] = args.minari_quality
             params['auto_stab'] = True
             return params
+        elif name_algo == "paspeq":
+            params['offline_epochs'] = 75_000
+            params['offline_frequency'] = 10000
+            params['val_check_interval'] = 1000
+            params['val_patience'] = 5000
+            params['dropout'] = auto_dropout
+            params['policy_based'] = True
+            return params
+        elif name_algo == "apaspeq":
+            params['offline_epochs'] = 75_000
+            params['val_buffer_prob'] = 0.1
+            params['val_buffer_offline_frac'] = 0.1
+            params['val_check_interval'] = 1000
+            params['val_patience'] = 5000
+            params['adaptive_trigger_rate'] = 1.1
+            params['dropout'] = auto_dropout
+            params['auto_stab'] = True
+            params['policy_based'] = True
+            return params
+        elif name_algo == "paspeq_o2o":
+            params['offline_epochs'] = 75_000
+            params['offline_frequency'] = 10000
+            params['val_check_interval'] = 1000
+            params['val_patience'] = 5000
+            params['dropout'] = auto_dropout
+            params['use_minari'] = True
+            params['minari_quality'] = args.minari_quality
+            params['policy_based'] = True
+            return params
+        elif name_algo == "apaspeq_o2o":
+            params['offline_epochs'] = 75_000
+            params['val_buffer_prob'] = 0.1
+            params['val_buffer_offline_frac'] = 0.1
+            params['val_check_interval'] = 1000
+            params['val_patience'] = 5000
+            params['adaptive_trigger_rate'] = 1.1
+            params['dropout'] = auto_dropout
+            params['use_minari'] = True
+            params['minari_quality'] = args.minari_quality
+            params['auto_stab'] = True
+            params['policy_based'] = True
+            return params
         else:
             raise ValueError(f"Unknown algorithm: {args.algo}")
 
@@ -587,5 +648,6 @@ if __name__ == '__main__':
          val_check_interval=params['val_check_interval'],
          val_patience=params['val_patience'],
          adaptive_trigger_expansion_rate=params['adaptive_trigger_rate'],
-         utd_ratio=params['utd_ratio'], auto_stab=params['auto_stab']
+         utd_ratio=params['utd_ratio'], auto_stab=params['auto_stab'],
+         policy_based=params['policy_based']
          )
