@@ -255,7 +255,7 @@ if __name__ == "__main__":
         "Swimmer-v5", "Pusher-v5"
     ]
     
-    algorithms = ['sac', 'aspeq', 'speq', 'droq', 'redq']
+    algorithms = ['sac', 'paspeq', 'speq', 'droq']
     
     TRUNCATE_AT = 'aspeq'
     

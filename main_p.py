@@ -447,6 +447,7 @@ if __name__ == '__main__':
     # ─── Training Parameters ──────────────────────────────────────────────────────
     parser.add_argument("--epochs",type=int,default=300,help="Number of training epochs")
     parser.add_argument("--offline-epochs",type=int,default=75_000,help="Maximum number of offline update epochs per stabilization")
+    parser.add_argument("--offline-frequency",type=int,default=10_000,help="Number of environment steps between offline stabilizations")
     parser.add_argument("--utd",type=int,default=1,help="Update-to-data ratio")
 
     # ─── NEW: Validation Parameters ───────────────────────────────────────────────
@@ -543,16 +544,16 @@ if __name__ == '__main__':
             params['offline_frequency'] = 10000
             params['dropout'] = auto_dropout
             return params
-        elif name_algo == "aspeq":
-            params['offline_epochs'] = 75_000
-            params['val_buffer_prob'] = 0.1
-            params['val_buffer_offline_frac'] = 0.1
-            params['val_check_interval'] = 1000
-            params['val_patience'] = 5000
-            params['adaptive_trigger_rate'] = 1.1
-            params['dropout'] = auto_dropout
-            params['auto_stab'] = True
-            return params   
+        # elif name_algo == "aspeq":
+        #     params['offline_epochs'] = 75_000
+        #     params['val_buffer_prob'] = 0.1
+        #     params['val_buffer_offline_frac'] = 0.1
+        #     params['val_check_interval'] = 1000
+        #     params['val_patience'] = 5000
+        #     params['adaptive_trigger_rate'] = 1.1
+        #     params['dropout'] = auto_dropout
+        #     params['auto_stab'] = True
+        #     return params   
         elif name_algo == "speq_o2o":
             params['offline_epochs'] = 75_000
             params['offline_frequency'] = 10000
@@ -560,18 +561,18 @@ if __name__ == '__main__':
             params['use_minari'] = True
             params['minari_quality'] = args.minari_quality
             return params
-        elif name_algo == "aspeq_o2o":
-            params['offline_epochs'] = 75_000
-            params['val_buffer_prob'] = 0.1
-            params['val_buffer_offline_frac'] = 0.1
-            params['val_check_interval'] = 1000
-            params['val_patience'] = 5000
-            params['adaptive_trigger_rate'] = 1.1
-            params['dropout'] = auto_dropout
-            params['use_minari'] = True
-            params['minari_quality'] = args.minari_quality
-            params['auto_stab'] = True
-            return params
+        # elif name_algo == "aspeq_o2o":
+        #     params['offline_epochs'] = 75_000
+        #     params['val_buffer_prob'] = 0.1
+        #     params['val_buffer_offline_frac'] = 0.1
+        #     params['val_check_interval'] = 1000
+        #     params['val_patience'] = 5000
+        #     params['adaptive_trigger_rate'] = 1.1
+        #     params['dropout'] = auto_dropout
+        #     params['use_minari'] = True
+        #     params['minari_quality'] = args.minari_quality
+        #     params['auto_stab'] = True
+        #     return params
         elif name_algo == "paspeq":
             params['offline_epochs'] = 75_000
             params['offline_frequency'] = 10000
@@ -580,20 +581,20 @@ if __name__ == '__main__':
             params['dropout'] = auto_dropout
             params['policy_based'] = True
             return params
-        elif name_algo == "apaspeq":
-            params['offline_epochs'] = 75_000
-            params['val_buffer_prob'] = 0.1
-            params['val_buffer_offline_frac'] = 0.1
-            params['val_check_interval'] = 1000
-            params['val_patience'] = 5000
-            params['adaptive_trigger_rate'] = 1.1
-            params['dropout'] = auto_dropout
-            params['auto_stab'] = True
-            params['policy_based'] = True
-            return params
+        # elif name_algo == "apaspeq":
+        #     params['offline_epochs'] = 75_000
+        #     params['val_buffer_prob'] = 0.1
+        #     params['val_buffer_offline_frac'] = 0.1
+        #     params['val_check_interval'] = 1000
+        #     params['val_patience'] = 5000
+        #     params['adaptive_trigger_rate'] = 1.1
+        #     params['dropout'] = auto_dropout
+        #     params['auto_stab'] = True
+        #     params['policy_based'] = True
+        #     return params
         elif name_algo == "paspeq_o2o":
             params['offline_epochs'] = 75_000
-            params['offline_frequency'] = 10000
+            params['offline_frequency'] = args.offline_frequency
             params['val_check_interval'] = 1000
             params['val_patience'] = 5000
             params['dropout'] = auto_dropout
@@ -601,19 +602,19 @@ if __name__ == '__main__':
             params['minari_quality'] = args.minari_quality
             params['policy_based'] = True
             return params
-        elif name_algo == "apaspeq_o2o":
-            params['offline_epochs'] = 75_000
-            params['val_buffer_prob'] = 0.1
-            params['val_buffer_offline_frac'] = 0.1
-            params['val_check_interval'] = 1000
-            params['val_patience'] = 5000
-            params['adaptive_trigger_rate'] = 1.1
-            params['dropout'] = auto_dropout
-            params['use_minari'] = True
-            params['minari_quality'] = args.minari_quality
-            params['auto_stab'] = True
-            params['policy_based'] = True
-            return params
+        # elif name_algo == "apaspeq_o2o":
+        #     params['offline_epochs'] = 75_000
+        #     params['val_buffer_prob'] = 0.1
+        #     params['val_buffer_offline_frac'] = 0.1
+        #     params['val_check_interval'] = 1000
+        #     params['val_patience'] = 5000
+        #     params['adaptive_trigger_rate'] = 1.1
+        #     params['dropout'] = auto_dropout
+        #     params['use_minari'] = True
+        #     params['minari_quality'] = args.minari_quality
+        #     params['auto_stab'] = True
+        #     params['policy_based'] = True
+        #     return params
         else:
             raise ValueError(f"Unknown algorithm: {args.algo}")
 

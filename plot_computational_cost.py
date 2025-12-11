@@ -43,11 +43,15 @@ def get_valid_seeds_for_env(api, entity, project, env, algorithms, metric_name="
     valid_seeds = set.intersection(*algo_seeds.values())
     return valid_seeds
 
-def get_global_average_stabilization(api, entity, project, environments, algorithms=["aspeq", "speq"],
+def get_global_average_stabilization(api, entity, project, environments, target_algo="aspeq",
+                                    algorithms=["aspeq", "speq", "paspeq"],
                                     metric_name="stabilization_epochs_performed"):
     """
-    Calculate global average stabilization epochs across all environments and seeds for ASPEQ.
+    Calculate global average stabilization epochs across all environments and seeds for target algorithm.
     
+    Args:
+        target_algo: Algorithm to calculate stabilization for ("aspeq" or "paspeq")
+        
     Returns:
         tuple: (mean, std, all individual sums across all envs/seeds)
     """
@@ -65,11 +69,11 @@ def get_global_average_stabilization(api, entity, project, environments, algorit
         
         print(f"  Valid seeds: {sorted(valid_seeds)}")
         
-        # Get all ASPEQ runs for this environment
+        # Get all runs for target algorithm in this environment
         runs = api.runs(f"{entity}/{project}")
         
         for run in runs:
-            if run.name.startswith(f"aspeq_{env}"):
+            if run.name.startswith(f"{target_algo}_{env}"):
                 # Check if seed is valid
                 try:
                     seed = run.config.get('seed', None)
@@ -87,7 +91,7 @@ def get_global_average_stabilization(api, entity, project, environments, algorit
                     print(f"  {run.name}: {total:.0f}")
     
     if not all_sums:
-        print("\nNo valid data found!")
+        print(f"\nNo valid data found for {target_algo}!")
         return None, None, []
     
     mean = np.mean(all_sums)
@@ -106,8 +110,8 @@ def plot_global_comparison(entity, project, environments):
     print("CALCULATING ASPEQ GLOBAL AVERAGE")
     print("="*80)
     
-    aspeq_stab_mean, aspeq_stab_std, all_sums = get_global_average_stabilization(
-        api, entity, project, environments
+    aspeq_stab_mean, aspeq_stab_std, aspeq_all_sums = get_global_average_stabilization(
+        api, entity, project, environments, target_algo="aspeq"
     )
     
     if aspeq_stab_mean is None:
@@ -116,8 +120,27 @@ def plot_global_comparison(entity, project, environments):
     
     print(f"\n{'='*80}")
     print(f"ASPEQ Stabilization Statistics:")
-    print(f"  Total runs analyzed: {len(all_sums)}")
+    print(f"  Total runs analyzed: {len(aspeq_all_sums)}")
     print(f"  Mean stabilization epochs: {aspeq_stab_mean:.2e} ± {aspeq_stab_std:.2e}")
+    print(f"{'='*80}\n")
+    
+    # Calculate PASPEQ average stabilization
+    print("="*80)
+    print("CALCULATING PASPEQ GLOBAL AVERAGE")
+    print("="*80)
+    
+    paspeq_stab_mean, paspeq_stab_std, paspeq_all_sums = get_global_average_stabilization(
+        api, entity, project, environments, target_algo="paspeq"
+    )
+    
+    if paspeq_stab_mean is None:
+        print("ERROR: No valid PASPEQ data found!")
+        return None
+    
+    print(f"\n{'='*80}")
+    print(f"PASPEQ Stabilization Statistics:")
+    print(f"  Total runs analyzed: {len(paspeq_all_sums)}")
+    print(f"  Mean stabilization epochs: {paspeq_stab_mean:.2e} ± {paspeq_stab_std:.2e}")
     print(f"{'='*80}\n")
     
     # Constants
@@ -129,27 +152,29 @@ def plot_global_comparison(entity, project, environments):
     sac_total = ONLINE_INTERACTIONS + ONLINE_INTERACTIONS * 2
     aspeq_total = ONLINE_INTERACTIONS + ONLINE_INTERACTIONS * 2 + aspeq_stab_mean * 2
     aspeq_total_std = aspeq_stab_std * 2  # std scales with multiplier
+    paspeq_total = ONLINE_INTERACTIONS + ONLINE_INTERACTIONS * 2 + paspeq_stab_mean * 2
+    paspeq_total_std = paspeq_stab_std * 2
     speq_total = ONLINE_INTERACTIONS + ONLINE_INTERACTIONS * 2 + SPEQ_STABILIZATION * 2
     droq_total = ONLINE_INTERACTIONS + ONLINE_INTERACTIONS * 20 * 2
     # redq_total = ONLINE_INTERACTIONS + ONLINE_INTERACTIONS * 20 * 20
     
     # Create figure
-    fig, ax = plt.subplots(figsize=(12, 8))
+    fig, ax = plt.subplots(figsize=(14, 8))
     
-    # Colors
-    sac_color = '#2ca02c'      # Green
-    aspeq_color = '#1f77b4'    # Blue
-    speq_color = '#ff7f0e'     # Orange
-    droq_color = '#d62728'     # Red
-    # redq_color = '#9467bd'     # Purple
+    # Colors (matching the plotting script)
+    sac_color = '#d62728'      # Red
+    speq_color = '#2ca02c'     # Green
+    droq_color = '#9467bd'     # Purple
+    paspeq_color = '#1f77b4'   # Blue
+    aspeq_color = '#ff7f0e'    # Orange
     
     # Data
-    algorithms = ['SAC', 'ASPEQ', 'SPEQ', 'DroQ']
-    values = [sac_total, aspeq_total, speq_total, droq_total ]
-    colors = [sac_color, aspeq_color, speq_color, droq_color ]
-    x_pos = [0, 1, 2, 3]
+    algorithms = ['SAC', 'SPEQ (Ours)', 'PASPEQ (Ours)', 'ASPEQ', 'DroQ']
+    values = [sac_total, speq_total, paspeq_total, aspeq_total, droq_total]
+    colors = [sac_color, speq_color, paspeq_color, aspeq_color, droq_color]
+    x_pos = [0, 1, 2, 3, 4]
     
-    # Plot bars with edges and rounded corners (using edgecolor and linewidth)
+    # Plot bars with edges and rounded corners
     bars = ax.bar(x_pos, values, color=colors, alpha=0.85, width=0.5,
                   edgecolor='black', linewidth=2.5)
     
@@ -176,6 +201,16 @@ def plot_global_comparison(entity, project, environments):
         )
         ax.add_patch(rounded_bar)
     
+    # Add error bars for ASPEQ and PASPEQ
+    # Find x positions for PASPEQ and ASPEQ
+    paspeq_idx = 2
+    aspeq_idx = 3
+    
+    ax.errorbar([x_pos[paspeq_idx]], [paspeq_total], yerr=[paspeq_total_std],
+                fmt='none', ecolor='black', elinewidth=2, capsize=5, capthick=2)
+    ax.errorbar([x_pos[aspeq_idx]], [aspeq_total], yerr=[aspeq_total_std],
+                fmt='none', ecolor='black', elinewidth=2, capsize=5, capthick=2)
+    
     # Format
     ax.set_ylabel("Total Updates (Gradient Steps)", fontsize=14, fontweight='bold')
     ax.set_title("Total Computational Cost Comparison", fontsize=16, fontweight='bold', pad=20)
@@ -193,15 +228,19 @@ def plot_global_comparison(entity, project, environments):
     print("\n" + "="*80)
     print("FINAL COMPARISON:")
     print("="*80)
-    print(f"SAC:   {sac_total:,.0f}")
-    print(f"ASPEQ: {aspeq_total:,.0f} ± {aspeq_total_std:,.0f}")
-    print(f"SPEQ:  {speq_total:,.0f}")
-    print(f"DroQ:  {droq_total:,.0f}")
-    # print(f"RedQ:  {redq_total:,.0f}")
+    print(f"SAC:    {sac_total:,.0f}")
+    print(f"SPEQ:   {speq_total:,.0f}")
+    print(f"PASPEQ: {paspeq_total:,.0f} ± {paspeq_total_std:,.0f}")
+    print(f"ASPEQ:  {aspeq_total:,.0f} ± {aspeq_total_std:,.0f}")
+    print(f"DroQ:   {droq_total:,.0f}")
+    print(f"\n--- Comparisons ---")
+    print(f"PASPEQ vs SPEQ reduction: {(1 - paspeq_total/speq_total)*100:.1f}%")
+    print(f"PASPEQ vs ASPEQ comparison: {(paspeq_total/aspeq_total - 1)*100:.1f}% {'more' if paspeq_total > aspeq_total else 'less'}")
+    print(f"PASPEQ overhead vs SAC: {(paspeq_total/sac_total - 1)*100:.1f}%")
+    print(f"PASPEQ vs DroQ reduction: {(1 - paspeq_total/droq_total)*100:.1f}%")
     print(f"\nASPEQ vs SPEQ reduction: {(1 - aspeq_total/speq_total)*100:.1f}%")
     print(f"ASPEQ overhead vs SAC: {(aspeq_total/sac_total - 1)*100:.1f}%")
     print(f"ASPEQ vs DroQ reduction: {(1 - aspeq_total/droq_total)*100:.1f}%")
-    # print(f"ASPEQ vs RedQ reduction: {(1 - aspeq_total/redq_total)*100:.1f}%")
     print("="*80)
     
     return fig
