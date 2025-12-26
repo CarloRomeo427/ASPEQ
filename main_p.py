@@ -575,7 +575,7 @@ if __name__ == '__main__':
         #     return params
         elif name_algo == "paspeq":
             params['offline_epochs'] = 75_000
-            params['offline_frequency'] = 10000
+            params['offline_frequency'] = args.offline_frequency
             params['val_check_interval'] = 1000
             params['val_patience'] = 5000
             params['dropout'] = auto_dropout
@@ -596,7 +596,7 @@ if __name__ == '__main__':
             params['offline_epochs'] = 75_000
             params['offline_frequency'] = args.offline_frequency
             params['val_check_interval'] = 1000
-            params['val_patience'] = 5000
+            params['val_patience'] = 10000 #5000
             params['dropout'] = auto_dropout
             params['use_minari'] = True
             params['minari_quality'] = args.minari_quality

@@ -227,8 +227,10 @@ if __name__ == "__main__":
     # Combine all environments
     all_envs = main_envs  + other_envs
     
-    algorithms = ["paspeq", "speq", "droq", "sac"]
+    # algorithms = ["paspeq", "speq", "droq", "sac"]
     
+    algorithms = ["paspeq_o2o", "rlpd"]
+
     # Create combined plot with 2 rows
     api = wandb.Api()
     
