@@ -78,10 +78,11 @@ def load_minari_dataset(agent, env_name=None, quality='expert'):
         T = len(episode.actions)
         
         for t in range(T):
-            obs = episode.observations[t]
-            action = episode.actions[t]
-            reward = episode.rewards[t]
-            next_obs = episode.observations[t + 1]
+            # Explicit float32 conversion to avoid dtype issues with float64 observations
+            obs = episode.observations[t].astype(np.float32)
+            action = episode.actions[t].astype(np.float32)
+            reward = float(episode.rewards[t])
+            next_obs = episode.observations[t + 1].astype(np.float32)
             done = episode.terminations[t]
             
             agent.store_data_offline(obs, action, reward, next_obs, done)

@@ -348,9 +348,10 @@ class TanhNormal(Distribution):
             return torch.tanh(z)
 
 
-class TanhGaussianPolicy(Mlp):
+class TanhGaussianPolicy(nn.Module):
     """
-    A Gaussian policy network with Tanh to enforce action limits
+    A Gaussian policy network with Tanh to enforce action limits.
+    Now supports LayerNorm for numerical stability with high-dimensional observations.
     """
 
     def __init__(
@@ -359,21 +360,35 @@ class TanhGaussianPolicy(Mlp):
             action_dim,
             hidden_sizes,
             hidden_activation=F.relu,
-            action_limit=1.0
+            action_limit=1.0,
+            layer_norm=False  # NEW: Added layer_norm parameter
     ):
-        super().__init__(
-            input_size=obs_dim,
-            output_size=action_dim,
-            hidden_sizes=hidden_sizes,
-            hidden_activation=hidden_activation,
-        )
-        last_hidden_size = obs_dim
-        if len(hidden_sizes) > 0:
-            last_hidden_size = hidden_sizes[-1]
-        ## this is the layer that gives log_std, init this layer with small weight and bias
-        self.last_fc_log_std = nn.Linear(last_hidden_size, action_dim)
-        ## action limit: for example, humanoid has an action limit of -0.4 to 0.4
+        super().__init__()
+        
+        self.obs_dim = obs_dim
+        self.action_dim = action_dim
+        self.hidden_activation = hidden_activation
         self.action_limit = action_limit
+        self.layer_norm = layer_norm
+        
+        # Build hidden layers with optional LayerNorm
+        self.hidden_layers = nn.ModuleList()
+        in_size = obs_dim
+        
+        for hidden_size in hidden_sizes:
+            self.hidden_layers.append(nn.Linear(in_size, hidden_size))
+            if layer_norm:
+                self.hidden_layers.append(nn.LayerNorm(hidden_size))
+            in_size = hidden_size
+        
+        # Track how many modules per "layer" for activation application
+        self.modules_per_layer = 2 if layer_norm else 1
+        
+        # Output layers for mean and log_std
+        self.last_fc_layer = nn.Linear(in_size, action_dim)
+        self.last_fc_log_std = nn.Linear(in_size, action_dim)
+        
+        # Initialize weights
         self.apply(weights_init_)
 
     def forward(
@@ -384,15 +399,17 @@ class TanhGaussianPolicy(Mlp):
     ):
         """
         :param obs: Observation
-        :param reparameterize: if True, use the reparameterization trick
-        :param deterministic: If True, take determinisitc (test) action
+        :param deterministic: If True, take deterministic (test) action
         :param return_log_prob: If True, return a sample and its log probability
         """
         h = obs
-        for fc_layer in self.hidden_layers:
-            h = self.hidden_activation(fc_layer(h))
+        for i, layer in enumerate(self.hidden_layers):
+            h = layer(h)
+            # Apply activation after each complete "block" (Linear + optional LayerNorm)
+            if (i + 1) % self.modules_per_layer == 0:
+                h = self.hidden_activation(h)
+        
         mean = self.last_fc_layer(h)
-
         log_std = self.last_fc_log_std(h)
         log_std = torch.clamp(log_std, LOG_SIG_MIN, LOG_SIG_MAX)
         std = torch.exp(log_std)
