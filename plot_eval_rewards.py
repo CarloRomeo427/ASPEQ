@@ -169,7 +169,7 @@ if __name__ == "__main__":
     entity = "carlo-romeo-alt427"
     project = "SPEQ"
     
-    valid_seeds = {0, 42, 1234, 5678, 9876, 777, 24680, 13579, 31415, 27182}
+    valid_seeds = {0, 42, 1234, 5678, 9876} #, 777, 24680, 13579, 31415, 27182}
     algorithms = ["paspeq_o2o", "rlpd"]
     
     all_envs = ["Humanoid-v5", "Ant-v5", "HalfCheetah-v5", "Hopper-v5", "Walker2d-v5",

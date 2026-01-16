@@ -2,6 +2,7 @@ import wandb
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
+import argparse
 
 def exponential_moving_average(data, alpha=0.05):
     """Apply EMA smoothing to data."""
@@ -14,79 +15,82 @@ def exponential_moving_average(data, alpha=0.05):
         ema[i] = alpha * data[i] + (1 - alpha) * ema[i-1]
     return ema
 
-def get_run_data_with_gradient_steps(api, entity, project, algo, env, valid_seeds):
-    """Get eval reward data aligned with cumulative gradient steps for a specific algorithm."""
+def build_run_name(algo, env, dataset):
+    """Build exact run name pattern matching plot_eval_rewards.py logic."""
+    if dataset == 'expert':
+        return f"{algo}_{env}"
+    return f"{algo}_{env}_{dataset}"
+
+def get_run_data_with_gradient_steps(api, entity, project, algo, env, valid_seeds, dataset='expert'):
+    """Get eval reward data aligned with cumulative gradient steps for a specific algorithm.
+    
+    Gradient step costs (CORRECTED from algorithm specifications):
+    - RLPD: 1 policy + 20 UTD * 10 Q-nets = 201 updates per env step
+    - PASPEQ O2O: 1 policy + 1 UTD * 2 Q-nets = 3 updates per env step + offline epochs * 2
+    """
     runs = api.runs(f"{entity}/{project}")
     all_seeds_data = []
     
+    # Build exact run name pattern
+    run_name_pattern = build_run_name(algo, env, dataset)
+    
     for run in runs:
-        if run.name.startswith(f"{algo}_{env}"):
-            try:
-                seed = run.config.get('seed', None)
-                if seed not in valid_seeds:
-                    continue
-            except:
+        # Use exact match to avoid matching different datasets
+        if run.name != run_name_pattern:
+            continue
+        
+        try:
+            seed = run.config.get('seed', None)
+            if seed not in valid_seeds:
                 continue
+        except:
+            continue
+        
+        # Get evaluation rewards and environment steps
+        history = run.history(keys=["EvalReward", "_step"], pandas=True)
+        history = history.dropna(subset=["EvalReward"])
+        
+        if len(history) == 0:
+            continue
+        
+        env_steps = history["_step"].values
+        rewards = history["EvalReward"].values
+        
+        # Calculate cumulative gradient steps based on algorithm
+        if algo == 'paspeq_o2o':
+            # PASPEQ O2O: 1 policy + 1 UTD * 2 Q = 3 per env step + offline epochs * 2
+            stab_history = run.history(keys=["stabilization_epochs_performed", "_step"], pandas=True)
             
-            # Get evaluation rewards and environment steps
-            history = run.history(keys=["EvalReward", "_step"], pandas=True)
-            history = history.dropna(subset=["EvalReward"])
+            # Online: env_steps * 3 (1 policy + 2 Q-nets)
+            online_grads = env_steps * 3
             
-            if len(history) == 0:
-                continue
-            
-            env_steps = history["_step"].values
-            rewards = history["EvalReward"].values
-            
-            # Calculate cumulative gradient steps based on algorithm
-            if algo == 'sac':
-                # SAC: 1 policy update + 2 Q updates per env step
-                gradient_steps = env_steps + env_steps * 2
+            # Offline: cumulative offline epochs * 2 Q-nets
+            if "stabilization_epochs_performed" in stab_history.columns:
+                stab_cumsum = np.zeros_like(env_steps, dtype=float)
                 
-            elif algo == 'droq':
-                # DroQ: 1 policy update + 20 UTD * 2 Q networks
-                gradient_steps = env_steps + env_steps * 20 * 2
+                for i, step in enumerate(env_steps):
+                    mask = stab_history["_step"] <= step
+                    stab_cumsum[i] = stab_history.loc[mask, "stabilization_epochs_performed"].sum()
                 
-            elif algo == 'redq':
-                # RedQ: 1 policy update + 20 UTD * 20 Q networks
-                gradient_steps = env_steps + env_steps * 20 * 20
-                
-            elif algo == 'speq':
-                # SPEQ: 1 policy + 2 Q online + periodic offline phases
-                online_grads = env_steps + env_steps * 2
-                # Offline: every 10k steps, do 75k epochs on 2 Q networks
-                num_offline_phases = np.floor(env_steps / 10000)
-                offline_grads = num_offline_phases * 75000 * 2
-                gradient_steps = online_grads + offline_grads
-                
-            elif algo == 'aspeq':
-                # ASPEQ: 1 policy + 2 Q online + dynamic offline phases
-                stab_history = run.history(keys=["stabilization_epochs_performed", "_step"], pandas=True)
-                
-                online_grads = env_steps + env_steps * 2
-                
-                if "stabilization_epochs_performed" in stab_history.columns:
-                    stab_cumsum = np.zeros_like(env_steps, dtype=float)
-                    
-                    for i, step in enumerate(env_steps):
-                        mask = stab_history["_step"] <= step
-                        stab_cumsum[i] = stab_history.loc[mask, "stabilization_epochs_performed"].sum()
-                    
-                    offline_grads = stab_cumsum * 2
-                else:
-                    offline_grads = 0
-                
-                gradient_steps = online_grads + offline_grads
-            
+                offline_grads = stab_cumsum * 2
             else:
-                gradient_steps = env_steps * 3
+                offline_grads = np.zeros_like(env_steps, dtype=float)
             
-            df = pd.DataFrame({
-                'gradient_steps': gradient_steps,
-                'reward': rewards
-            })
-            all_seeds_data.append(df)
-            print(f"  Loaded {run.name}: {len(df)} points, max gradient steps: {gradient_steps[-1]:.2e}")
+            gradient_steps = online_grads + offline_grads
+            
+        elif algo == 'rlpd':
+            # RLPD: 1 policy + 20 UTD * 10 Q-nets = 201 updates per env step
+            gradient_steps = env_steps * 201
+        
+        else:
+            gradient_steps = env_steps * 3
+        
+        df = pd.DataFrame({
+            'gradient_steps': gradient_steps,
+            'reward': rewards
+        })
+        all_seeds_data.append(df)
+        print(f"      Loaded {run.name} (seed={seed}): {len(df)} points, max gradient steps: {gradient_steps[-1]:.2e}")
     
     return all_seeds_data
 
@@ -135,7 +139,7 @@ def compute_mean_std_across_seeds_gradients(all_seeds_data, max_gradient_steps=N
     # Stack and compute statistics (ignoring NaN)
     stacked = np.array(interpolated_seeds)
     mean = np.nanmean(stacked, axis=0)
-    std = np.nanstd(stacked, axis=0, ddof=1)
+    std = np.nanstd(stacked, axis=0, ddof=1) if len(stacked) > 1 else np.zeros_like(mean)
     
     # Remove trailing NaN values
     valid_mask = ~np.isnan(mean)
@@ -144,129 +148,209 @@ def compute_mean_std_across_seeds_gradients(all_seeds_data, max_gradient_steps=N
     
     return all_grad_steps[valid_mask], mean[valid_mask], std[valid_mask]
 
-def plot_reward_vs_gradient_steps(entity, project, environments, algorithms, valid_seeds, 
-                                   ema_alpha=0.05, truncate_at='aspeq'):
-    """Plot reward vs gradient steps for multiple environments."""
+def plot_reward_vs_gradient_steps(entity, project, environments, algorithms, valid_seeds, dataset,
+                                   ema_alpha=0.05):
+    """Plot reward vs gradient steps for multiple environments with consistent x-axis truncation."""
     api = wandb.Api()
     
-    # Color mapping - matching W&B colors more closely
-    color_map = {
-        'sac': '#2ca02c',        # Green (like W&B)
-        'droq': '#d62728',       # Red (like W&B)
-        'aspeq': '#9467bd',      # Purple/Blue (like W&B)
-        'speq': '#ff7f0e',       # Orange (like W&B)
-        'redq': '#8c564b'        # Brown
-    }
+    print(f"\nProcessing {len(environments)} environments...")
+    print(f"Dataset: {dataset}")
+    print(f"Algorithms: {algorithms}")
+    
+    # First pass: collect all data and find global max gradient steps
+    print("\n" + "="*80)
+    print("COLLECTING DATA")
+    print("="*80)
+    
+    all_algo_env_data = {}
+    
+    for env in environments:
+        print(f"\n{env}:")
+        for algo in algorithms:
+            key = (algo, env)
+            all_seeds_data = get_run_data_with_gradient_steps(api, entity, project, algo, env, valid_seeds, dataset)
+            all_algo_env_data[key] = all_seeds_data
+    
+    # Find PASPEQ's global min and max gradient steps across all seeds/envs
+    # PASPEQ is the SOLE reference for x-axis boundaries
+    paspeq_global_min = float('inf')
+    paspeq_global_max = 0
+    
+    for env in environments:
+        key = ('paspeq_o2o', env)
+        if key in all_algo_env_data and all_algo_env_data[key]:
+            for df in all_algo_env_data[key]:
+                paspeq_global_min = min(paspeq_global_min, df['gradient_steps'].min())
+                paspeq_global_max = max(paspeq_global_max, df['gradient_steps'].max())
+    
+    if paspeq_global_min == float('inf') or paspeq_global_max == 0:
+        print("\nERROR: No PASPEQ data found")
+        return None
+    
+    # X-axis boundaries are defined ONLY by PASPEQ
+    global_min_grad = paspeq_global_min
+    comparison_budget = paspeq_global_max
+    
+    print(f"\n{'='*80}")
+    print(f"X-AXIS RANGE (defined by PASPEQ only):")
+    print(f"{'='*80}")
+    print(f"PASPEQ min gradient steps: {global_min_grad:.2e}")
+    print(f"PASPEQ max gradient steps: {comparison_budget:.2e}")
+    print(f"ALL algorithms will be plotted within this exact range")
+    print(f"{'='*80}")
+    
+    # Create a common gradient step grid based on PASPEQ's range
+    common_grad_steps = np.logspace(
+        np.log10(global_min_grad), 
+        np.log10(comparison_budget), 
+        num=200
+    )
+    
+    print(f"\nCreated common gradient step grid: {len(common_grad_steps)} points")
+    print(f"  from {common_grad_steps[0]:.2e} to {common_grad_steps[-1]:.2e}")
+    print(f"{'='*80}")
     
     # Create subplots
-    fig, axes = plt.subplots(2, 5, figsize=(25, 10))
-    axes = axes.flatten()
+    n_envs = len(environments)
+    n_cols = min(5, n_envs)
+    n_rows = (n_envs + n_cols - 1) // n_cols
+    
+    fig, axes = plt.subplots(n_rows, n_cols, figsize=(5 * n_cols, 5 * n_rows))
+    axes = np.atleast_2d(axes).flatten()
+    
+    print(f"\n{'='*80}")
+    print("PLOTTING (all algorithms within PASPEQ's x-axis range)")
+    print(f"{'='*80}")
+    
+    color_map = {
+        'paspeq_o2o': '#1f77b4',
+        'rlpd': '#ff7f0e',
+    }
     
     for env_idx, env in enumerate(environments):
         ax = axes[env_idx]
-        print(f"\n{'='*80}")
-        print(f"Processing {env}")
-        print(f"{'='*80}")
-        
-        # Collect all data first
-        algo_data = {}
-        max_end_aspeq = 0
-        max_end_speq = 0
+        print(f"\n{env}:")
         
         for algo in algorithms:
-            print(f"\n{algo.upper()}:")
-            all_seeds_data = get_run_data_with_gradient_steps(api, entity, project, algo, env, valid_seeds)
+            key = (algo, env)
+            all_seeds_data = all_algo_env_data.get(key, [])
             
             if not all_seeds_data:
-                print(f"  No data found for {algo}_{env}")
+                print(f"  {algo.upper()}: No data")
                 continue
             
-            algo_data[algo] = all_seeds_data
-            
-            # Track max gradient steps for truncation
+            # Interpolate each seed's data to the COMMON gradient step grid (PASPEQ-defined)
+            # CRITICAL: All algorithms must start and end at EXACTLY PASPEQ's boundaries
+            interpolated_seeds = []
             for df in all_seeds_data:
-                max_grad = df['gradient_steps'].max()
-                if algo == 'aspeq':
-                    max_end_aspeq = max(max_end_aspeq, max_grad)
-                elif algo == 'speq':
-                    max_end_speq = max(max_end_speq, max_grad)
-        
-        if not algo_data:
-            print(f"No data for any algorithm in {env}")
-            continue
-        
-        # Determine truncation point
-        max_gradient_steps = max_end_aspeq if truncate_at == 'aspeq' else max_end_speq
-        print(f"\nTruncating at {truncate_at.upper()}: {max_gradient_steps:.2e} gradient steps")
-        
-        # Plot each algorithm
-        for algo in algorithms:
-            if algo not in algo_data:
+                df_sorted = df.sort_values("gradient_steps")
+                
+                grad_values = df_sorted["gradient_steps"].values
+                reward_values = df_sorted["reward"].values
+                
+                # Truncate seed data to PASPEQ's max (right boundary)
+                mask_within_budget = grad_values <= comparison_budget
+                grad_values = grad_values[mask_within_budget]
+                reward_values = reward_values[mask_within_budget]
+                
+                if len(grad_values) == 0:
+                    continue
+                
+                # Interpolate to common grid
+                # np.interp will automatically:
+                # - Use first value for points BEFORE the data range (extends left)
+                # - Use last value for points AFTER the data range (extends right)
+                # This ensures the line spans the entire PASPEQ-defined x-axis
+                interp_values = np.interp(
+                    common_grad_steps,
+                    grad_values,
+                    reward_values
+                )
+                
+                interpolated_seeds.append(interp_values)
+            
+            if not interpolated_seeds:
+                print(f"  {algo.upper()}: No valid data within PASPEQ range")
                 continue
             
-            # Compute mean and std
-            grad_steps, mean, std = compute_mean_std_across_seeds_gradients(
-                algo_data[algo], max_gradient_steps=max_gradient_steps
-            )
-            
-            if grad_steps is None:
-                print(f"{algo.upper()}: No valid data after truncation")
-                continue
+            # Compute mean and std across seeds on the common grid
+            stacked = np.array(interpolated_seeds)
+            mean = np.mean(stacked, axis=0)
+            std = np.std(stacked, axis=0, ddof=1) if len(stacked) > 1 else np.zeros_like(mean)
             
             # Apply EMA smoothing
             mean_ema = exponential_moving_average(mean, alpha=ema_alpha)
             std_ema = exponential_moving_average(std, alpha=ema_alpha)
             
-            # Plot
+            algo_label = "PASPEQ O2O (Ours)" if algo == 'paspeq_o2o' else algo.upper()
             color = color_map.get(algo, '#000000')
-            label = 'SPEQ (Ours)' if algo == 'speq' else algo.upper()
             
-            ax.plot(grad_steps, mean_ema, label=label, linewidth=2, color=color)
-            ax.fill_between(grad_steps, mean_ema - std_ema, mean_ema + std_ema, 
-                           alpha=0.2, color=color)
+            # Plot the full range (all algorithms now span the exact same x-axis)
+            ax.plot(common_grad_steps, mean_ema, label=algo_label, linewidth=2, color=color)
+            ax.fill_between(common_grad_steps, mean_ema - std_ema, mean_ema + std_ema, alpha=0.2, color=color)
             
-            print(f"{algo.upper()}: Final = {mean_ema[-1]:.2f} ± {std_ema[-1]:.2f}")
+            # Report final values
+            final_reward = mean_ema[-1]
+            final_std = std_ema[-1]
+            print(f"  {algo_label:25s}: x-range [{common_grad_steps[0]:.2e}, {common_grad_steps[-1]:.2e}] | final reward = {final_reward:>7.2f} ± {final_std:6.2f}")
         
-        # Format subplot
+        # Set x-axis limits to PASPEQ's exact range (no extra padding)
+        ax.set_xlim(left=global_min_grad, right=comparison_budget)
+        
         env_display = env.replace("-v5", "")
-        ax.set_title(env_display, fontsize=14, fontweight='bold')
-        ax.set_xlabel("Gradient Steps", fontsize=11)
-        ax.set_ylabel("Eval Reward", fontsize=11)
+        ax.set_title(env_display, fontsize=12, fontweight='bold')
+        ax.set_xlabel("Gradient Steps", fontsize=10)
+        ax.set_ylabel("Eval Reward", fontsize=10)
         ax.set_xscale('log')
         ax.grid(True, alpha=0.3)
-        ax.legend(fontsize=9, loc='best')
+        ax.legend(fontsize=8, loc='best')
     
-    truncate_label = "ASPEQ" if truncate_at == 'aspeq' else "SPEQ"
-    plt.suptitle(f"Reward vs Gradient Steps Comparison (Truncated at {truncate_label})", 
-                 fontsize=18, fontweight='bold', y=0.995)
+    # Hide unused axes
+    for idx in range(len(environments), len(axes)):
+        axes[idx].set_visible(False)
+    
+    plt.suptitle(f"Reward vs Gradient Steps - {dataset.upper()} Dataset\n" + 
+                 f"X-axis defined by PASPEQ range. RLPD: 201 steps/env | PASPEQ: 3 steps/env + offline", 
+                 fontsize=13, fontweight='bold')
     plt.tight_layout()
     
     return fig
 
 if __name__ == "__main__":
+    import os
+    
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--dataset", type=str, default="expert", choices=["expert", "medium", "simple"])
+    args = parser.parse_args()
+    
     entity = "carlo-romeo-alt427"
     project = "SPEQ"
     
-    valid_seeds = {0, 42, 1234, 5678, 777, 9876, 13579, 31415, 24680, 27182}
+    valid_seeds = {0, 42, 1234, 5678, 9876}
+    algorithms = ['paspeq_o2o', 'rlpd']
     
-    environments = [
-        "Ant-v5", "Walker2d-v5", "HalfCheetah-v5", "Humanoid-v5", "Hopper-v5",
-        "InvertedPendulum-v5", "InvertedDoublePendulum-v5", "Reacher-v5", 
-        "Swimmer-v5", "Pusher-v5"
-    ]
+    all_envs = ["Humanoid-v5", "Ant-v5", "HalfCheetah-v5", "Hopper-v5", "Walker2d-v5",
+                "InvertedPendulum-v5", "InvertedDoublePendulum-v5", "Pusher-v5", "Reacher-v5", "Swimmer-v5"]
+    simple_only_envs = ["Humanoid-v5", "Ant-v5", "HalfCheetah-v5", "Hopper-v5", "Walker2d-v5"]
     
-    algorithms = ['sac', 'paspeq', 'speq', 'droq']
-    
-    TRUNCATE_AT = 'aspeq'
+    # Filter environments based on dataset
+    if args.dataset == "simple":
+        environments = simple_only_envs
+    else:
+        environments = all_envs
     
     print(f"Using seeds: {sorted(valid_seeds)}")
-    print(f"Truncating at: {TRUNCATE_AT.upper()}\n")
+    print(f"Algorithms: {algorithms}")
+    print(f"Environments: {len(environments)}")
     
-    fig = plot_reward_vs_gradient_steps(entity, project, environments, algorithms, valid_seeds,
-                                         truncate_at=TRUNCATE_AT)
+    fig = plot_reward_vs_gradient_steps(entity, project, environments, algorithms, valid_seeds, args.dataset)
     
-    filename_suffix = f"_truncated_at_{TRUNCATE_AT.upper()}"
-    plt.savefig(f"Plots/pdf/Reward_vs_Gradient_Steps{filename_suffix}.pdf", dpi=300, bbox_inches="tight")
-    plt.savefig(f"Plots/png/Reward_vs_Gradient_Steps{filename_suffix}.png", dpi=300, bbox_inches="tight")
-    print("\n\nPlot saved")
-    plt.show()
+    if fig:
+        # Create directories if they don't exist
+        os.makedirs("Plots/pdf", exist_ok=True)
+        os.makedirs("Plots/png", exist_ok=True)
+        
+        plt.savefig(f"Plots/pdf/Reward_vs_Gradient_Steps_{args.dataset}.pdf", dpi=300, bbox_inches="tight")
+        plt.savefig(f"Plots/png/Reward_vs_Gradient_Steps_{args.dataset}.png", dpi=300, bbox_inches="tight")
+        print("\n\nPlot saved")
+        plt.show()
