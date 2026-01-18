@@ -1,6 +1,6 @@
 #!/bin/bash
-for seed in 5678 9876; do
-    for env in Humanoid-v5 HalfCheetah-v5 Hopper-v5; do
-        python main_a3rl.py --env $env --seed $seed  --log-wandb  --use-minari
+for seed in 0 42 1234; do
+    for env in Pusher-v5 Swimmer-v5 Reacher-v5 InvertedPendulum-v5 InvertedDoublePendulum-v5; do
+        python main_faspeq_online.py --env $env --seed $seed --epochs 300 --log-wandb
     done
 done
