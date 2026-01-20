@@ -4,7 +4,6 @@
 import copy
 import numpy as np
 import torch
-from torch import Tensor
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
@@ -80,8 +79,12 @@ class Agent(object):
             iql_beta: Temperature for advantage-weighted policy extraction (default: 3.0)
                       Lower values make policy more greedy
         """
-        # Policy network (same as SAC)
-        self.policy_net = TanhGaussianPolicy(obs_dim, act_dim, hidden_sizes, action_limit=act_limit).to(device)
+        # Policy network - NOW WITH LAYER_NORM SUPPORT
+        self.policy_net = TanhGaussianPolicy(
+            obs_dim, act_dim, hidden_sizes, 
+            action_limit=act_limit,
+            layer_norm=layer_norm  # Pass layer_norm to policy network
+        ).to(device)
         
         # Q networks (same as SAC)
         self.q_net_list, self.q_target_net_list = [], []
@@ -180,7 +183,7 @@ class Agent(object):
     def get_exploration_action(self, obs, env):
         with torch.no_grad():
             if self.__get_current_num_data() > self.start_steps:
-                obs_tensor = torch.Tensor(obs).unsqueeze(0).to(self.device)
+                obs_tensor = torch.FloatTensor(obs).unsqueeze(0).to(self.device)
                 action_tensor = self.policy_net.forward(obs_tensor, deterministic=False, return_log_prob=False)[0]
                 action = action_tensor.cpu().numpy().reshape(-1)
             else:
@@ -190,7 +193,7 @@ class Agent(object):
     def get_exploration_action_o2o(self, obs, env, timestep):
         with torch.no_grad():
             if timestep > self.start_steps:
-                obs_tensor = torch.Tensor(obs).unsqueeze(0).to(self.device)
+                obs_tensor = torch.FloatTensor(obs).unsqueeze(0).to(self.device)
                 action_tensor = self.policy_net.forward(obs_tensor, deterministic=False, return_log_prob=False)[0]
                 action = action_tensor.cpu().numpy().reshape(-1)
             else:
@@ -199,14 +202,14 @@ class Agent(object):
 
     def get_test_action(self, obs):
         with torch.no_grad():
-            obs_tensor = torch.Tensor(obs).unsqueeze(0).to(self.device)
+            obs_tensor = torch.FloatTensor(obs).unsqueeze(0).to(self.device)
             action_tensor = self.policy_net.forward(obs_tensor, deterministic=True, return_log_prob=False)[0]
             action = action_tensor.cpu().numpy().reshape(-1)
         return action
 
     def get_action_and_logprob_for_bias_evaluation(self, obs):
         with torch.no_grad():
-            obs_tensor = torch.Tensor(obs).unsqueeze(0).to(self.device)
+            obs_tensor = torch.FloatTensor(obs).unsqueeze(0).to(self.device)
             action_tensor, _, _, log_prob_a_tilda, _, _, = self.policy_net.forward(obs_tensor, deterministic=False,
                                                                                    return_log_prob=True)
             action = action_tensor.cpu().numpy().reshape(-1)
@@ -263,12 +266,13 @@ class Agent(object):
         return False
 
     def sample_data(self, batch_size):
+        """Sample batch from online replay buffer."""
         batch = self.replay_buffer.sample_batch(batch_size)
-        obs_tensor = Tensor(batch['obs1']).to(self.device)
-        obs_next_tensor = Tensor(batch['obs2']).to(self.device)
-        acts_tensor = Tensor(batch['acts']).to(self.device)
-        rews_tensor = Tensor(batch['rews']).unsqueeze(1).to(self.device)
-        done_tensor = Tensor(batch['done']).unsqueeze(1).to(self.device)
+        obs_tensor = torch.FloatTensor(batch['obs1']).to(self.device)
+        obs_next_tensor = torch.FloatTensor(batch['obs2']).to(self.device)
+        acts_tensor = torch.FloatTensor(batch['acts']).to(self.device)
+        rews_tensor = torch.FloatTensor(batch['rews']).unsqueeze(1).to(self.device)
+        done_tensor = torch.FloatTensor(batch['done']).unsqueeze(1).to(self.device)
         return obs_tensor, obs_next_tensor, acts_tensor, rews_tensor, done_tensor
     
     def sample_data_mix(self, batch_size):
@@ -284,21 +288,21 @@ class Agent(object):
             'done': np.concatenate([batch_online['done'], batch_offline['done']], axis=0),
         }
 
-        obs_tensor = Tensor(batch['obs1']).to(self.device)
-        obs_next_tensor = Tensor(batch['obs2']).to(self.device)
-        acts_tensor = Tensor(batch['acts']).to(self.device)
-        rews_tensor = Tensor(batch['rews']).unsqueeze(1).to(self.device)
-        done_tensor = Tensor(batch['done']).unsqueeze(1).to(self.device)
+        obs_tensor = torch.FloatTensor(batch['obs1']).to(self.device)
+        obs_next_tensor = torch.FloatTensor(batch['obs2']).to(self.device)
+        acts_tensor = torch.FloatTensor(batch['acts']).to(self.device)
+        rews_tensor = torch.FloatTensor(batch['rews']).unsqueeze(1).to(self.device)
+        done_tensor = torch.FloatTensor(batch['done']).unsqueeze(1).to(self.device)
         return obs_tensor, obs_next_tensor, acts_tensor, rews_tensor, done_tensor
     
     def sample_data_offline_only(self, batch_size):
         """Sample batch from offline buffer only."""
         batch = self.replay_buffer_offline.sample_batch(batch_size)
-        obs_tensor = Tensor(batch['obs1']).to(self.device)
-        obs_next_tensor = Tensor(batch['obs2']).to(self.device)
-        acts_tensor = Tensor(batch['acts']).to(self.device)
-        rews_tensor = Tensor(batch['rews']).unsqueeze(1).to(self.device)
-        done_tensor = Tensor(batch['done']).unsqueeze(1).to(self.device)
+        obs_tensor = torch.FloatTensor(batch['obs1']).to(self.device)
+        obs_next_tensor = torch.FloatTensor(batch['obs2']).to(self.device)
+        acts_tensor = torch.FloatTensor(batch['acts']).to(self.device)
+        rews_tensor = torch.FloatTensor(batch['rews']).unsqueeze(1).to(self.device)
+        done_tensor = torch.FloatTensor(batch['done']).unsqueeze(1).to(self.device)
         return obs_tensor, obs_next_tensor, acts_tensor, rews_tensor, done_tensor
 
     def compute_iql_value_loss(self, obs_tensor, acts_tensor):
@@ -375,8 +379,12 @@ class Agent(object):
         # Compute log probability of dataset actions under current policy
         # For tanh-squashed Gaussian: log π(a|s) = log N(atanh(a); μ, σ) - log(1 - tanh²(atanh(a)))
         # Since acts_tensor are already squashed, we need to invert
+        
+        # Normalize actions to [-1, 1] range for log-prob computation
+        acts_normalized = acts_tensor / self.act_limit
+        
         eps = 1e-6
-        acts_clamped = acts_tensor.clamp(-1 + eps, 1 - eps)
+        acts_clamped = acts_normalized.clamp(-1 + eps, 1 - eps)
         pretanh_actions = torch.atanh(acts_clamped)
         
         std = log_std.exp()
