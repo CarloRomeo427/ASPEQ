@@ -1,6 +1,6 @@
 #!/bin/bash
-for seed in 42; do
-    for env in Hopper-v5; do
-        python main.py --env $env --seed $seed --log-wandb --algo rlpd --gpu-id 0 --minari-quality simple --use-minari
+for seed in 0 42 1234; do
+    for env in HalfCheetah-v5; do
+        python main_faspeq_td_val.py --env HalfCheetah-v5 --seed $seed --log-wand --use-minari --minari-quality expert
     done
 done
