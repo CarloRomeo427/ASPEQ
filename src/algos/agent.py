@@ -2,6 +2,8 @@
 
 
 import copy
+import os
+import random  # Added for state saving
 
 import numpy as np
 import torch
@@ -27,28 +29,17 @@ class EffectiveRankMonitor:
         """
         Compute effective rank from singular values.
         erank(G) = -Σ σ̄ᵢ log σ̄ᵢ (entropy of singular value distribution)
-        
-        Args:
-            singular_values: Tensor of singular values
-            eps: Small constant for numerical stability
-            
-        Returns:
-            Effective rank value
         """
-        # Normalize singular values
         sv_sum = singular_values.sum()
         if sv_sum < eps:
             return 0.0
         
         normalized_sv = singular_values / sv_sum
-        
-        # Filter out near-zero values
         normalized_sv = normalized_sv[normalized_sv > eps]
         
         if len(normalized_sv) == 0:
             return 0.0
         
-        # Compute effective rank: -Σ σ̄ᵢ log σ̄ᵢ
         log_sv = torch.log(normalized_sv)
         effective_rank = -torch.sum(normalized_sv * log_sv).item()
         
@@ -56,13 +47,11 @@ class EffectiveRankMonitor:
     
     @staticmethod
     def compute_condition_number(singular_values: torch.Tensor, eps: float = 1e-10) -> float:
-        """
-        Compute condition number (ratio of largest to smallest singular value).
-        """
+        """Compute condition number (ratio of largest to smallest singular value)."""
         if len(singular_values) == 0:
             return float('inf')
         
-        max_sv = singular_values[0]  # Assuming sorted in descending order
+        max_sv = singular_values[0]
         min_sv = singular_values[-1]
         
         if min_sv < eps:
@@ -72,24 +61,13 @@ class EffectiveRankMonitor:
     
     @staticmethod
     def compute_gradient_metrics(gradients: torch.Tensor) -> dict:
-        """
-        Compute spectral metrics for a gradient matrix.
-        
-        Args:
-            gradients: Tensor of shape (num_params, batch_size) representing
-                      per-example gradients
-                      
-        Returns:
-            Dictionary containing effective_rank, condition_number, spectral_norm, stable_rank
-        """
+        """Compute spectral metrics for a gradient matrix."""
         if gradients.dim() == 1:
             gradients = gradients.unsqueeze(1)
         
-        # Compute SVD
         try:
             U, S, Vh = torch.linalg.svd(gradients, full_matrices=False)
         except:
-            # Fallback for numerical issues
             return {
                 'effective_rank': 0.0,
                 'condition_number': float('inf'),
@@ -97,12 +75,10 @@ class EffectiveRankMonitor:
                 'stable_rank': 0.0
             }
         
-        # Compute metrics
         effective_rank = EffectiveRankMonitor.compute_effective_rank(S)
         condition_number = EffectiveRankMonitor.compute_condition_number(S)
         spectral_norm = S[0].item() if len(S) > 0 else 0.0
         
-        # Stable rank: ||G||_F^2 / ||G||_2^2
         frobenius_norm_sq = torch.sum(S ** 2).item()
         stable_rank = frobenius_norm_sq / (spectral_norm ** 2 + 1e-10)
         
@@ -141,13 +117,6 @@ class Agent(object):
                  ):
         """
         SPEQ Agent with validation buffer and adaptive offline stabilization triggering.
-        
-        New parameters:
-            val_buffer_prob: Probability of adding online transitions to validation buffer (default: 0.1)
-            val_buffer_offline_frac: Fraction of offline data to add to validation buffer (default: 0.1)
-            val_check_interval: Steps between validation checks during offline training (default: 1000)
-            val_patience: Steps without validation improvement before early stopping (default: 5000)
-            adaptive_trigger_expansion_rate: Buffer growth rate for adaptive triggering (default: 1.1)
         """
         self.policy_net = TanhGaussianPolicy(obs_dim, act_dim, (256, 256), action_limit=act_limit).to(device)
         self.q_net_list, self.q_target_net_list = [], []
@@ -186,7 +155,7 @@ class Agent(object):
         self.replay_buffer = ReplayBuffer(obs_dim=obs_dim, act_dim=act_dim, size=replay_size)
         self.replay_buffer_offline = ReplayBuffer(obs_dim=obs_dim, act_dim=act_dim, size=replay_size)
         
-        # NEW: Validation replay buffer
+        # Validation replay buffer
         self.val_replay_buffer = ReplayBuffer(obs_dim=obs_dim, act_dim=act_dim, size=int(replay_size * 0.2))
         
         self.mse_criterion = nn.MSELoss()
@@ -211,20 +180,62 @@ class Agent(object):
         self.target_drop_rate = target_drop_rate
         self.layer_norm = layer_norm
         
-        # NEW: Validation and adaptive triggering parameters
+        # Validation and adaptive triggering parameters
         self.val_buffer_prob = val_buffer_prob
         self.val_buffer_offline_frac = val_buffer_offline_frac
         self.val_check_interval = val_check_interval
         self.val_patience = val_patience
         self.adaptive_trigger_expansion_rate = adaptive_trigger_expansion_rate
         
-        # NEW: Adaptive triggering state
+        # Adaptive triggering state
         self.last_trigger_buffer_size = start_steps
         self.next_trigger_size = int(start_steps * adaptive_trigger_expansion_rate)
         self.auto_stab = auto_stab
         
         # Effective rank monitor
         self.effective_rank_monitor = EffectiveRankMonitor()
+
+    def save_checkpoint(self, path):
+        """
+        Saves a complete checkpoint of the agent, including networks, optimizers, 
+        buffers, and random states to ensure reproducibility.
+        """
+        print(f"Saving checkpoint to {path}...")
+        state = {
+            # Networks
+            'policy_net_state_dict': self.policy_net.state_dict(),
+            'q_net_state_dicts': [q.state_dict() for q in self.q_net_list],
+            'q_target_net_state_dicts': [q.state_dict() for q in self.q_target_net_list],
+            
+            # Optimizers
+            'policy_optimizer_state_dict': self.policy_optimizer.state_dict(),
+            'q_optimizer_state_dicts': [q.state_dict() for q in self.q_optimizer_list],
+            
+            # Alpha
+            'log_alpha': self.log_alpha,
+            'alpha': self.alpha,
+            'alpha_optimizer_state_dict': self.alpha_optim.state_dict() if self.alpha_optim else None,
+            
+            # Replay Buffers (Saving internal dictionary for reconstruction)
+            'replay_buffer': self.replay_buffer.__dict__,
+            'replay_buffer_offline': self.replay_buffer_offline.__dict__,
+            'val_replay_buffer': self.val_replay_buffer.__dict__,
+            
+            # Random States for reproducibility
+            'torch_rng_state': torch.get_rng_state(),
+            'cuda_rng_state': torch.cuda.get_rng_state() if torch.cuda.is_available() else None,
+            'numpy_rng_state': np.random.get_state(),
+            'random_rng_state': random.getstate(),
+            
+            # Adaptive triggering state
+            'last_trigger_buffer_size': self.last_trigger_buffer_size,
+            'next_trigger_size': self.next_trigger_size,
+        }
+        
+        # Ensure directory exists
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        torch.save(state, path)
+        print("Checkpoint saved successfully.")
 
     def __get_current_num_data(self):
         return self.replay_buffer.size
@@ -239,6 +250,7 @@ class Agent(object):
                 action = env.action_space.sample()
         return action
 
+    # ... [Rest of the Agent methods remain unchanged: get_test_action, store_data, etc.] ...
     def get_exploration_action_o2o(self, obs, env, timestep):
         with torch.no_grad():
             if timestep > self.start_steps:
@@ -274,39 +286,20 @@ class Agent(object):
         return average_q_prediction
 
     def store_data(self, o, a, r, o2, d):
-        """
-        Store data in main replay buffer and probabilistically in validation buffer.
-        
-        Args:
-            o: observation
-            a: action
-            r: reward
-            o2: next observation
-            d: done flag
-        """
-        # Always store in main buffer
         self.replay_buffer.store(o, a, r, o2, d)
-        
-        # NEW: Probabilistically store in validation buffer
         if np.random.rand() < self.val_buffer_prob:
             self.val_replay_buffer.store(o, a, r, o2, d)
 
     def store_data_offline(self, o, a, r, o2, d):
-        """Store offline data in offline buffer."""
         self.replay_buffer_offline.store(o, a, r, o2, d)
 
     def populate_val_buffer_from_offline(self):
-        """
-        NEW: Populate validation buffer with a fraction of offline data.
-        Called once after loading offline dataset.
-        """
         if self.replay_buffer_offline.size == 0:
             return
         
         num_samples = int(self.replay_buffer_offline.size * self.val_buffer_offline_frac)
         print(f"Adding {num_samples} offline samples to validation buffer...")
         
-        # Sample without replacement from offline buffer
         all_data = self.replay_buffer_offline.sample_all()
         indices = np.random.choice(self.replay_buffer_offline.size, 
                                    size=min(num_samples, self.replay_buffer_offline.size), 
@@ -324,19 +317,12 @@ class Agent(object):
         print(f"Validation buffer now contains {self.val_replay_buffer.size} samples")
 
     def check_should_trigger_offline_stabilization(self):
-        """
-        NEW: Check if offline stabilization should be triggered based on 10% buffer growth.
-        
-        Returns:
-            bool: True if stabilization should be triggered
-        """
         current_size = self.replay_buffer.size
 
         if self.val_replay_buffer.size < 1000 and not self.auto_stab:
             return False
         
         if current_size >= self.next_trigger_size:
-            # Update trigger thresholds
             self.last_trigger_buffer_size = current_size
             self.next_trigger_size = int(current_size * self.adaptive_trigger_expansion_rate)
             
@@ -401,7 +387,7 @@ class Agent(object):
                 q_prediction_next_list.append(q_prediction_next)
             q_prediction_next_cat = torch.cat(q_prediction_next_list, 1)
             
-            sample_idxs = None  # <-- ADD THIS LINE
+            sample_idxs = None
             
             if self.q_target_mode == 'min':
                 q_target = torch.min(q_prediction_next_cat, 1, keepdim=True)[0]
@@ -423,7 +409,6 @@ class Agent(object):
         return y_q, sample_idxs
 
     def compute_effective_rank_metrics(self, batch_size=256):
-        """Compute effective rank metrics for Q-networks."""
         metrics = {}
         
         for q_idx, q_net in enumerate(self.q_net_list):
@@ -431,14 +416,12 @@ class Agent(object):
             obs_tensor = torch.Tensor(batch['obs1']).to(self.device)
             acts_tensor = torch.Tensor(batch['acts']).to(self.device)
             
-            # Get per-example gradients
             q_net.zero_grad()
             inputs = torch.cat([obs_tensor, acts_tensor], 1)
             inputs.requires_grad = True
             
             outputs = q_net(inputs)
             
-            # Compute gradients for each sample
             gradients = []
             for i in range(batch_size):
                 q_net.zero_grad()
@@ -458,13 +441,6 @@ class Agent(object):
         return metrics
 
     def train(self, logger, current_env_step=None):
-        """
-        Standard online training update.
-        
-        Args:
-            logger: Logger object for storing metrics
-            current_env_step: Current environment step for wandb logging (optional)
-        """
         num_update = 0 if self.__get_current_num_data() <= self.delay_update_steps else self.utd_ratio
         for i_update in range(num_update):
 
@@ -522,14 +498,12 @@ class Agent(object):
             for q_i in range(self.num_Q):
                 soft_update_model1_with_model2(self.q_target_net_list[q_i], self.q_net_list[q_i], self.polyak)
 
-            # Only log at the last update and only if current_env_step is provided
             if i_update == num_update - 1:
                 logger.store(LossPi=policy_loss.cpu().item(), LossQ1=q_loss_all.cpu().item() / self.num_Q,
                              LossAlpha=alpha_loss.cpu().item(), Q1Vals=q_prediction.detach().cpu().numpy(),
                              Alpha=self.alpha, LogPi=log_prob_a_tilda.detach().cpu().numpy(),
                              PreTanh=pretanh.abs().detach().cpu().numpy().reshape(-1))
 
-                # Log to wandb with explicit step if provided
                 if current_env_step is not None:
                     wandb.log({
                         "policy_loss": policy_loss.cpu().item(), 
@@ -545,15 +519,6 @@ class Agent(object):
         return weight * (diff ** 2)
 
     def evaluate_validation_loss(self, batch_size=256):
-        """
-        NEW: Evaluate Q-loss on validation buffer.
-        
-        Args:
-            batch_size: Batch size for evaluation
-            
-        Returns:
-            Average validation loss across all samples
-        """
         if self.val_replay_buffer.size == 0:
             return 0.0
         
@@ -596,20 +561,8 @@ class Agent(object):
         return average_loss
 
     def finetune_offline_auto(self, epochs, test_env=None, current_env_step=None):
-        """ 
-        NEW: Finetune with validation-based early stopping.
-        
-        Args:
-            epochs: Maximum number of offline training epochs
-            test_env: Environment for evaluation (optional)
-            current_env_step: Current environment step for wandb logging
-            
-        Returns:
-            Number of epochs actually performed (may be less than max if early stopped)
-        """
         print(f"\nStarting offline stabilization (max {epochs} epochs)...")
         
-        # Log initial validation loss
         initial_loss = self.evaluate_validation_loss()
         best_val_loss = initial_loss
         steps_without_improvement = 0
@@ -623,7 +576,6 @@ class Agent(object):
         print(f"Initial validation loss: {initial_loss:.4f}")
        
         for e in range(epochs):
-            # NEW: Check validation loss at regular intervals
             if e > 0 and e % self.val_check_interval == 0:
                 val_loss = self.evaluate_validation_loss()
                 
@@ -634,8 +586,7 @@ class Agent(object):
                         "offline_training": 1
                     }, step=current_env_step)
                 
-                # NEW: Early stopping logic
-                if val_loss < best_val_loss * 0.999:  # 0.1% improvement threshold
+                if val_loss < best_val_loss * 0.999:
                     best_val_loss = val_loss
                     steps_without_improvement = 0
                     print(f"Epoch {e}: Val loss improved to {val_loss:.4f}")
@@ -643,7 +594,6 @@ class Agent(object):
                     steps_without_improvement += self.val_check_interval
                     print(f"Epoch {e}: Val loss {val_loss:.4f} (no improvement for {steps_without_improvement} steps)")
                 
-                # NEW: Stop if no improvement for val_patience steps
                 if steps_without_improvement >= self.val_patience:
                     print(f"\nEarly stopping at epoch {e}: No improvement for {steps_without_improvement} steps")
                     print(f"Best validation loss: {best_val_loss:.4f}")
@@ -654,7 +604,6 @@ class Agent(object):
                         }, step=current_env_step)
                     return e
             
-            # Evaluate on test environment every 5000 epochs
             if test_env and (e + 1) % 5000 == 0:
                 test_rw = test_agent(self, test_env, 1000, None)
                 if current_env_step is not None:
@@ -663,7 +612,6 @@ class Agent(object):
                         "offline_training": 1
                     }, step=current_env_step)
             
-            # Sample data and train
             if self.o2o:
                 obs_tensor, obs_next_tensor, acts_tensor, rews_tensor, done_tensor = self.sample_data_mix(
                     self.batch_size)
@@ -671,7 +619,6 @@ class Agent(object):
                 obs_tensor, obs_next_tensor, acts_tensor, rews_tensor, done_tensor = self.sample_data(
                 self.batch_size)
             
-            """Q loss with expectile loss"""
             y_q, sample_idxs = self.get_redq_q_target_no_grad(obs_next_tensor, rews_tensor, done_tensor)
             q_prediction_list = []
             for q_i in range(self.num_Q):
@@ -681,7 +628,6 @@ class Agent(object):
             y_q = y_q.expand((-1, self.num_Q)) if y_q.shape[1] == 1 else y_q
             q_loss_all = self.expectile_loss(q_prediction_cat - y_q,).mean() * self.num_Q
 
-            # Update Q-networks
             for q_i in range(self.num_Q):
                 self.q_optimizer_list[q_i].zero_grad()
             q_loss_all.backward()
@@ -689,12 +635,10 @@ class Agent(object):
             for q_i in range(self.num_Q):
                 self.q_optimizer_list[q_i].step()
 
-            # Update target networks
             for q_i in range(self.num_Q):
                 soft_update_model1_with_model2(self.q_target_net_list[q_i], self.q_net_list[q_i],
                                                 self.polyak)
         
-        # Log completion
         final_val_loss = self.evaluate_validation_loss()
         print(f"\nOffline stabilization completed: {epochs} epochs")
         print(f"Final validation loss: {final_val_loss:.4f}")
@@ -708,35 +652,21 @@ class Agent(object):
         return epochs
 
     def finetune_offline(self, epochs, test_env=None, current_env_step=None):
-        """ 
-        Finetune the model on the replay buffer data.
-        
-        Args:
-            epochs: Number of offline training epochs
-            test_env: Environment for evaluation (optional)
-            current_env_step: Current environment step for wandb logging
-        """
-
-        # Log initial validation loss with explicit step
         initial_loss = self.evaluate_validation_loss()
         if current_env_step is not None:
             wandb.log({"ValLoss": initial_loss}, step=current_env_step)
        
         for e in range(epochs):
-            # Log validation loss every 1000 epochs
             if e % 1000 == 0 and e > 0:
                 val_loss = self.evaluate_validation_loss()
                 if current_env_step is not None:
-                    # Use same env step for all offline updates within this offline training phase
                     wandb.log({"ValLoss": val_loss}, step=current_env_step)
             
-            # Evaluate on test environment every 5000 epochs
             if test_env and (e + 1) % 5000 == 0:
                 test_rw = test_agent(self, test_env, 1000, None)
                 if current_env_step is not None:
                     wandb.log({"OfflineEvalReward": np.mean(test_rw)}, step=current_env_step)
             
-            # Sample data and train
             if self.o2o:
                 obs_tensor, obs_next_tensor, acts_tensor, rews_tensor, done_tensor = self.sample_data_mix(
                     self.batch_size)
@@ -744,7 +674,6 @@ class Agent(object):
                 obs_tensor, obs_next_tensor, acts_tensor, rews_tensor, done_tensor = self.sample_data(
                 self.batch_size)
             
-            """Q loss with expectile loss"""
             y_q, sample_idxs = self.get_redq_q_target_no_grad(obs_next_tensor, rews_tensor, done_tensor)
             q_prediction_list = []
             for q_i in range(self.num_Q):
@@ -754,7 +683,6 @@ class Agent(object):
             y_q = y_q.expand((-1, self.num_Q)) if y_q.shape[1] == 1 else y_q
             q_loss_all = self.expectile_loss(q_prediction_cat - y_q,).mean() * self.num_Q
 
-            # Update Q-networks
             for q_i in range(self.num_Q):
                 self.q_optimizer_list[q_i].zero_grad()
             q_loss_all.backward()
@@ -762,7 +690,6 @@ class Agent(object):
             for q_i in range(self.num_Q):
                 self.q_optimizer_list[q_i].step()
 
-            # Update target networks
             for q_i in range(self.num_Q):
                 soft_update_model1_with_model2(self.q_target_net_list[q_i], self.q_net_list[q_i],
                                                 self.polyak)

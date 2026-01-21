@@ -9,7 +9,7 @@ import sys
 import wandb
 import minari
 
-from src.algos.agent_f import Agent
+from src.algos.agent_f_lcb import Agent
 from src.algos.core import mbpo_epoches, test_agent
 from src.utils.run_utils import setup_logger_kwargs
 from src.utils.bias_utils import log_bias_evaluation
