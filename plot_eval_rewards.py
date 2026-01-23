@@ -17,7 +17,7 @@ def get_eval_reward_for_run(api, entity, project, run_name_pattern, metric_name=
     all_seeds_data = []
     
     for run in runs:
-        if run.name == run_name_pattern:  # Exact match
+        if run.name == run_name_pattern:
             if valid_seeds is not None:
                 try:
                     seed = run.config.get('seed', None)
@@ -56,10 +56,16 @@ def compute_mean_std_across_seeds(all_seeds_data, metric_name="EvalReward"):
     
     return np.array(all_steps), mean, std
 
+# Algorithms that always include dataset quality in run name
+ALWAYS_SUFFIX_ALGOS = {'calql', 'speq_o2o'}
+
 def build_run_name(algo, env, dataset):
-    if dataset == "expert":
-        return f"{algo}_{env}"
-    return f"{algo}_{env}_{dataset}"
+    if algo in ALWAYS_SUFFIX_ALGOS:
+        return f"{algo}_{env}_{dataset}"
+    else:
+        if dataset == "expert":
+            return f"{algo}_{env}"
+        return f"{algo}_{env}_{dataset}"
 
 def plot_single_env(api, entity, project, env, algorithms, valid_seeds, dataset, 
                     metric_name="EvalReward", ema_alpha=0.05, ax=None):
@@ -69,6 +75,17 @@ def plot_single_env(api, entity, project, env, algorithms, valid_seeds, dataset,
     color_map = {
         'paspeq_o2o': '#1f77b4',
         'rlpd': '#ff7f0e',
+        'calql': '#2ca02c',
+        'iql': '#d62728',
+        'speq_o2o': '#9467bd',
+    }
+    
+    label_map = {
+        'paspeq_o2o': 'PASPEQ O2O (Ours)',
+        'rlpd': 'RLPD',
+        'calql': 'Cal-QL',
+        'iql': 'IQL',
+        'speq_o2o': 'SPEQ O2O',
     }
     
     for idx, algo in enumerate(algorithms):
@@ -85,7 +102,7 @@ def plot_single_env(api, entity, project, env, algorithms, valid_seeds, dataset,
         mean_ema = exponential_moving_average(mean, alpha=ema_alpha)
         std_ema = exponential_moving_average(std, alpha=ema_alpha)
         
-        algo_label = "PASPEQ O2O (Ours)" if algo == 'paspeq_o2o' else algo.upper()
+        algo_label = label_map.get(algo, algo.upper())
         color = color_map.get(algo, plt.cm.tab10(idx))
         
         ax.plot(steps, mean_ema, label=algo_label, linewidth=2, color=color)
@@ -140,6 +157,14 @@ def collect_final_scores_and_times(api, entity, project, environments, algorithm
     return algo_data
 
 def print_summary_statistics(algo_data, algorithms):
+    label_map = {
+        'paspeq_o2o': 'PASPEQ O2O',
+        'rlpd': 'RLPD',
+        'calql': 'Cal-QL',
+        'iql': 'IQL',
+        'speq_o2o': 'SPEQ O2O',
+    }
+    
     print("\n" + "="*80)
     print("SUMMARY STATISTICS")
     print("="*80)
@@ -147,18 +172,20 @@ def print_summary_statistics(algo_data, algorithms):
     print("\nFINAL SCORES:")
     for algo in algorithms:
         scores = algo_data[algo]['final_scores']
+        label = label_map.get(algo, algo.upper())
         if scores:
-            print(f"{algo.upper():12s}: {np.mean(scores):8.2f} ± {np.std(scores, ddof=1) if len(scores) > 1 else 0:6.2f}  (n={len(scores)})")
+            print(f"{label:15s}: {np.mean(scores):8.2f} ± {np.std(scores, ddof=1) if len(scores) > 1 else 0:6.2f}  (n={len(scores)})")
         else:
-            print(f"{algo.upper():12s}: No data")
+            print(f"{label:15s}: No data")
     
     print("\nRUNNING TIMES:")
     for algo in algorithms:
         times = algo_data[algo]['run_times']
+        label = label_map.get(algo, algo.upper())
         if times:
-            print(f"{algo.upper():12s}: {np.mean(times):6.2f} ± {np.std(times, ddof=1) if len(times) > 1 else 0:5.2f} hours  (n={len(times)})")
+            print(f"{label:15s}: {np.mean(times):6.2f} ± {np.std(times, ddof=1) if len(times) > 1 else 0:5.2f} hours  (n={len(times)})")
         else:
-            print(f"{algo.upper():12s}: No timing data")
+            print(f"{label:15s}: No timing data")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
@@ -169,14 +196,13 @@ if __name__ == "__main__":
     entity = "carlo-romeo-alt427"
     project = "SPEQ"
     
-    valid_seeds = {0, 42, 1234, 5678, 9876} #, 777, 24680, 13579, 31415, 27182}
-    algorithms = ["paspeq_o2o", "rlpd"]
+    valid_seeds = {0, 42, 1234, 5678, 9876}
+    algorithms = ["iql", "calql", "speq_o2o", "rlpd", "paspeq_o2o"]
     
     all_envs = ["Humanoid-v5", "Ant-v5", "HalfCheetah-v5", "Hopper-v5", "Walker2d-v5",
                 "InvertedPendulum-v5", "InvertedDoublePendulum-v5", "Pusher-v5", "Reacher-v5", "Swimmer-v5"]
     simple_only_envs = ["Humanoid-v5", "Ant-v5", "HalfCheetah-v5", "Hopper-v5", "Walker2d-v5"]
     
-    # Filter environments based on dataset
     if args.dataset == "simple":
         envs = simple_only_envs
     else:
@@ -199,7 +225,6 @@ if __name__ == "__main__":
             print(f"\n{env}:")
             plot_single_env(api, entity, project, env, algorithms, valid_seeds, args.dataset, ax=axes[idx])
         
-        # Hide unused axes
         for idx in range(len(envs), len(axes)):
             axes[idx].set_visible(False)
         

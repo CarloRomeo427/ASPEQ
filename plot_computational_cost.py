@@ -1,41 +1,45 @@
+"""
+Computational Cost Comparison Table Generator
+
+Computes total gradient steps for each algorithm across MuJoCo environments.
+
+Gradient step formulas:
+┌─────────────┬──────────────────────────────────────────────────────────────────────────────┐
+│ Algorithm   │ Total Gradient Steps Formula                                                 │
+├─────────────┼──────────────────────────────────────────────────────────────────────────────┤
+│ RLPD        │ online_steps × 201  (1 policy + 20 UTD × 10 Q-nets)                          │
+│ PASPEQ O2O  │ online_steps × 3 + offline_epochs × 2  (dynamic offline from WandB)         │
+│ SPEQ        │ online_steps × 3 + (online_steps/10000) × 75000 × 2  (fixed 75k every 10k)  │
+│ IQL         │ online_steps × 4 + offline_pretrain × 4  (1V + 2Q + 1π per step)            │
+│ Cal-QL      │ online_steps × 3 + offline_pretrain × 3  (2Q + 1π per step)                 │
+│ SAC         │ online_steps × 3  (1 policy + 2 Q-nets, UTD=1)                              │
+└─────────────┴──────────────────────────────────────────────────────────────────────────────┘
+
+Configuration:
+- Online training steps: 300,000 for all algorithms
+- IQL/CalQL offline pretraining: 300,000 steps (configurable)
+- RLPD: UTD=20, 10 Q-networks
+- PASPEQ/SPEQ/CalQL/SAC: UTD=1, 2 Q-networks
+- IQL: UTD=1, 2 Q-networks + 1 Value network
+"""
+
 import wandb
 import pandas as pd
 import numpy as np
-import matplotlib.pyplot as plt
 import argparse
 
-def exponential_moving_average(data, alpha=0.05):
-    """Apply EMA smoothing to data."""
-    if len(data) == 0:
-        return data
-    
-    ema = np.zeros_like(data)
-    ema[0] = data[0]
-    for i in range(1, len(data)):
-        ema[i] = alpha * data[i] + (1 - alpha) * ema[i-1]
-    return ema
-
-def build_run_name(algo, env, dataset):
-    """Build exact run name pattern matching plot_eval_rewards.py logic."""
-    if dataset == 'expert':
-        return f"{algo}_{env}"
-    return f"{algo}_{env}_{dataset}"
-
-def get_run_data_with_gradient_steps(api, entity, project, algo, env, valid_seeds, dataset='expert'):
-    """Get eval reward data aligned with cumulative gradient steps for a specific algorithm.
-    
-    Gradient step costs (CORRECTED from algorithm specifications):
-    - RLPD: 1 policy + 20 UTD * 10 Q-nets = 201 updates per env step
-    - PASPEQ O2O: 1 policy + 1 UTD * 2 Q-nets = 3 updates per env step + offline epochs * 2
-    """
+def get_paspeq_offline_epochs(api, entity, project, env, valid_seeds, dataset='expert'):
+    """Fetch total offline epochs performed by PASPEQ O2O from WandB logs."""
     runs = api.runs(f"{entity}/{project}")
-    all_seeds_data = []
     
-    # Build exact run name pattern
-    run_name_pattern = build_run_name(algo, env, dataset)
+    if dataset == 'expert':
+        run_name_pattern = f"paspeq_o2o_{env}"
+    else:
+        run_name_pattern = f"paspeq_o2o_{env}_{dataset}"
+    
+    offline_epochs_list = []
     
     for run in runs:
-        # Use exact match to avoid matching different datasets
         if run.name != run_name_pattern:
             continue
         
@@ -46,245 +50,279 @@ def get_run_data_with_gradient_steps(api, entity, project, algo, env, valid_seed
         except:
             continue
         
-        # Get evaluation rewards and environment steps
-        history = run.history(keys=["EvalReward", "_step"], pandas=True)
-        history = history.dropna(subset=["EvalReward"])
+        # Get stabilization epochs performed
+        history = run.history(keys=["stabilization_epochs_performed"], pandas=True)
         
-        if len(history) == 0:
-            continue
-        
-        env_steps = history["_step"].values
-        rewards = history["EvalReward"].values
-        
-        # Calculate cumulative gradient steps based on algorithm
-        if algo == 'paspeq_o2o':
-            # PASPEQ O2O: 1 policy + 1 UTD * 2 Q = 3 per env step + offline epochs * 2
-            stab_history = run.history(keys=["stabilization_epochs_performed", "_step"], pandas=True)
-            
-            # Online: env_steps * 3 (1 policy + 2 Q-nets)
-            online_grads = env_steps * 3
-            
-            # Offline: cumulative offline epochs * 2 Q-nets
-            if "stabilization_epochs_performed" in stab_history.columns:
-                stab_cumsum = np.zeros_like(env_steps, dtype=float)
-                
-                for i, step in enumerate(env_steps):
-                    mask = stab_history["_step"] <= step
-                    stab_cumsum[i] = stab_history.loc[mask, "stabilization_epochs_performed"].sum()
-                
-                offline_grads = stab_cumsum * 2
-            else:
-                offline_grads = np.zeros_like(env_steps, dtype=float)
-            
-            gradient_steps = online_grads + offline_grads
-            
-        elif algo == 'rlpd':
-            # RLPD: 1 policy + 20 UTD * 10 Q-nets = 201 updates per env step
-            gradient_steps = env_steps * 201
-        
-        else:
-            gradient_steps = env_steps * 3
-        
-        df = pd.DataFrame({
-            'gradient_steps': gradient_steps,
-            'reward': rewards
-        })
-        all_seeds_data.append(df)
-        print(f"      Loaded {run.name} (seed={seed}): {len(df)} points, max gradient steps: {gradient_steps[-1]:.2e}")
+        if "stabilization_epochs_performed" in history.columns:
+            total_epochs = history["stabilization_epochs_performed"].sum()
+            offline_epochs_list.append(total_epochs)
+            print(f"    {run.name} (seed={seed}): {total_epochs:,.0f} offline epochs")
     
-    return all_seeds_data
+    return offline_epochs_list
 
-def compute_mean_std_across_seeds_gradients(all_seeds_data, max_gradient_steps=None):
-    """Compute mean and std across seeds, aligned by gradient steps."""
-    if not all_seeds_data:
-        return None, None, None
+def compute_gradient_steps_table(entity, project, environments, valid_seeds, dataset='expert',
+                                  online_steps=300000, offline_pretrain_iql_calql=300000):
+    """
+    Compute total gradient steps for each algorithm and environment.
     
-    # Collect all gradient steps from all seeds
-    all_grad_steps_set = set()
-    for df in all_seeds_data:
-        all_grad_steps_set.update(df["gradient_steps"].values)
-    
-    # Sort and convert to array
-    all_grad_steps = np.array(sorted(all_grad_steps_set))
-    
-    # Truncate if needed
-    if max_gradient_steps is not None:
-        all_grad_steps = all_grad_steps[all_grad_steps <= max_gradient_steps]
-    
-    if len(all_grad_steps) == 0:
-        return None, None, None
-    
-    # Interpolate each seed to common gradient steps
-    interpolated_seeds = []
-    for df in all_seeds_data:
-        df_sorted = df.sort_values("gradient_steps")
-        
-        # Only interpolate up to the maximum gradient step this seed reached
-        max_seed_grad = df_sorted["gradient_steps"].max()
-        valid_grad_steps = all_grad_steps[all_grad_steps <= max_seed_grad]
-        
-        if len(valid_grad_steps) == 0:
-            continue
-        
-        interp_values = np.interp(valid_grad_steps, 
-                                  df_sorted["gradient_steps"].values, 
-                                  df_sorted["reward"].values)
-        
-        # Pad with NaN for gradient steps beyond this seed's range
-        full_interp = np.full(len(all_grad_steps), np.nan)
-        full_interp[:len(valid_grad_steps)] = interp_values
-        
-        interpolated_seeds.append(full_interp)
-    
-    # Stack and compute statistics (ignoring NaN)
-    stacked = np.array(interpolated_seeds)
-    mean = np.nanmean(stacked, axis=0)
-    std = np.nanstd(stacked, axis=0, ddof=1) if len(stacked) > 1 else np.zeros_like(mean)
-    
-    # Remove trailing NaN values
-    valid_mask = ~np.isnan(mean)
-    if not np.any(valid_mask):
-        return None, None, None
-    
-    return all_grad_steps[valid_mask], mean[valid_mask], std[valid_mask]
-
-def plot_reward_vs_gradient_steps(entity, project, environments, algorithms, valid_seeds, dataset,
-                                   ema_alpha=0.05):
-    """Plot reward vs gradient steps for multiple environments with consistent x-axis truncation."""
+    Args:
+        online_steps: Number of online environment steps (default: 300,000)
+        offline_pretrain_iql_calql: Offline pretraining steps for IQL/CalQL (default: 300,000)
+    """
     api = wandb.Api()
     
-    print(f"\nProcessing {len(environments)} environments...")
+    print(f"\n{'='*100}")
+    print("COMPUTATIONAL COST COMPARISON - GRADIENT STEPS")
+    print(f"{'='*100}")
+    print(f"Online steps: {online_steps:,}")
+    print(f"IQL/CalQL offline pretraining: {offline_pretrain_iql_calql:,}")
     print(f"Dataset: {dataset}")
-    print(f"Algorithms: {algorithms}")
+    print(f"{'='*100}\n")
     
-    # First pass: collect all data and find global max gradient steps
-    print("\n" + "="*80)
-    print("COLLECTING DATA")
-    print("="*80)
+    # Algorithm configurations
+    # Format: (online_cost_per_step, offline_formula_description)
+    algo_configs = {
+        'RLPD': {
+            'online_per_step': 201,  # 1 policy + 20 UTD × 10 Q
+            'offline_total': 0,
+            'description': '1π + 20×10Q per step'
+        },
+        'SAC': {
+            'online_per_step': 3,  # 1 policy + 2 Q (UTD=1)
+            'offline_total': 0,
+            'description': '1π + 2Q per step'
+        },
+        'IQL': {
+            'online_per_step': 4,  # 1 V + 2 Q + 1 policy
+            'offline_total': offline_pretrain_iql_calql * 4,  # V + 2Q + π per offline step
+            'description': '1V + 2Q + 1π per step'
+        },
+        'Cal-QL': {
+            'online_per_step': 3,  # 2 Q + 1 policy
+            'offline_total': offline_pretrain_iql_calql * 3,  # 2Q + π per offline step
+            'description': '2Q + 1π per step'
+        },
+        'SPEQ': {
+            'online_per_step': 3,  # 1 policy + 2 Q
+            # Offline: every 10k steps, perform 75k epochs × 2 Q-networks
+            'offline_total': (online_steps // 10000) * 75000 * 2,
+            'description': '1π + 2Q + 75k×2 every 10k'
+        },
+        # PASPEQ will be computed dynamically from WandB
+    }
     
-    all_algo_env_data = {}
+    results = []
     
     for env in environments:
         print(f"\n{env}:")
-        for algo in algorithms:
-            key = (algo, env)
-            all_seeds_data = get_run_data_with_gradient_steps(api, entity, project, algo, env, valid_seeds, dataset)
-            all_algo_env_data[key] = all_seeds_data
-    
-    # Don't truncate - let each algorithm show its complete trajectory
-    # with proper gradient step scaling. This is how the SPEQ paper does it.
-    # RLPD (201x per step) will naturally extend much further than PASPEQ (3x + offline)
-    # on the log scale, which correctly shows the computational comparison.
-    
-    print(f"\n{'='*80}")
-    print(f"GRADIENT STEP SCALING (per SPEQ paper methodology):")
-    print(f"  PASPEQ O2O: 1 policy + 1 UTD × 2 Q-nets = 3 updates per env step + offline epochs × 2")
-    print(f"  RLPD:       1 policy + 20 UTD × 10 Q-nets = 201 updates per env step")
-    print(f"Each algorithm shows its full trajectory. RLPD extends ~67x further on x-axis.")
-    print(f"{'='*80}")
-    
-    # Create subplots
-    n_envs = len(environments)
-    n_cols = min(5, n_envs)
-    n_rows = (n_envs + n_cols - 1) // n_cols
-    
-    fig, axes = plt.subplots(n_rows, n_cols, figsize=(5 * n_cols, 5 * n_rows))
-    axes = np.atleast_2d(axes).flatten()
-    
-    print(f"\n{'='*80}")
-    print("PLOTTING")
-    print(f"{'='*80}")
-    
-    color_map = {
-        'paspeq_o2o': '#1f77b4',
-        'rlpd': '#ff7f0e',
-    }
-    
-    for env_idx, env in enumerate(environments):
-        ax = axes[env_idx]
-        print(f"\n{env}:")
+        env_results = {'Environment': env.replace('-v5', '')}
         
-        for algo in algorithms:
-            key = (algo, env)
-            all_seeds_data = all_algo_env_data.get(key, [])
-            
-            if not all_seeds_data:
-                print(f"  {algo.upper()}: No data")
-                continue
-            
-            # Don't truncate - let each algorithm show full trajectory with proper scaling
-            grad_steps, mean, std = compute_mean_std_across_seeds_gradients(
-                all_seeds_data, max_gradient_steps=None
-            )
-            
-            if grad_steps is None:
-                print(f"  {algo.upper()}: No valid data")
-                continue
-            
-            mean_ema = exponential_moving_average(mean, alpha=ema_alpha)
-            std_ema = exponential_moving_average(std, alpha=ema_alpha)
-            
-            algo_label = "PASPEQ O2O (Ours)" if algo == 'paspeq_o2o' else algo.upper()
-            color = color_map.get(algo, '#000000')
-            
-            ax.plot(grad_steps, mean_ema, label=algo_label, linewidth=2, color=color)
-            ax.fill_between(grad_steps, mean_ema - std_ema, mean_ema + std_ema, alpha=0.2, color=color)
-            print(f"  {algo_label:25s}: gradient range [{grad_steps[0]:.2e}, {grad_steps[-1]:.2e}], final reward = {mean_ema[-1]:.2f} ± {std_ema[-1]:.2f}")
+        # Compute for fixed-formula algorithms
+        for algo_name, config in algo_configs.items():
+            online_cost = online_steps * config['online_per_step']
+            offline_cost = config['offline_total']
+            total = online_cost + offline_cost
+            env_results[algo_name] = total
+            print(f"  {algo_name:12s}: {total:>15,} (online: {online_cost:,}, offline: {offline_cost:,})")
         
-        env_display = env.replace("-v5", "")
-        ax.set_title(env_display, fontsize=12, fontweight='bold')
-        ax.set_xlabel("Gradient Steps", fontsize=10)
-        ax.set_ylabel("Eval Reward", fontsize=10)
-        ax.set_xscale('log')
-        ax.grid(True, alpha=0.3)
-        ax.legend(fontsize=9, loc='best')
+        # Compute PASPEQ O2O from WandB (dynamic offline epochs)
+        print(f"  Fetching PASPEQ O2O from WandB...")
+        offline_epochs_list = get_paspeq_offline_epochs(api, entity, project, env, valid_seeds, dataset)
+        
+        if offline_epochs_list:
+            mean_offline = np.mean(offline_epochs_list)
+            std_offline = np.std(offline_epochs_list, ddof=1) if len(offline_epochs_list) > 1 else 0
+            
+            online_cost = online_steps * 3
+            offline_cost_mean = mean_offline * 2  # 2 Q-networks per offline epoch
+            offline_cost_std = std_offline * 2
+            
+            total_mean = online_cost + offline_cost_mean
+            total_std = offline_cost_std
+            
+            env_results['PASPEQ_mean'] = total_mean
+            env_results['PASPEQ_std'] = total_std
+            env_results['PASPEQ_offline_epochs'] = mean_offline
+            
+            print(f"  {'PASPEQ O2O':12s}: {total_mean:>15,.0f} ± {total_std:,.0f} (offline epochs: {mean_offline:,.0f})")
+        else:
+            env_results['PASPEQ_mean'] = np.nan
+            env_results['PASPEQ_std'] = np.nan
+            env_results['PASPEQ_offline_epochs'] = np.nan
+            print(f"  {'PASPEQ O2O':12s}: No data found")
+        
+        results.append(env_results)
     
-    # Hide unused axes
-    for idx in range(len(environments), len(axes)):
-        axes[idx].set_visible(False)
+    return pd.DataFrame(results)
+
+def format_table(df, online_steps=300000):
+    """Format the results into a publication-ready table."""
     
-    plt.suptitle(f"Reward vs Gradient Steps (Proper Scaling) - {dataset.upper()} Dataset\n" + 
-                 f"PASPEQ: 3 steps/env + offline | RLPD: 201 steps/env", 
-                 fontsize=16, fontweight='bold')
-    plt.tight_layout()
+    # RLPD total (constant across all environments)
+    rlpd_total = online_steps * 201
     
-    return fig
+    print(f"\n\n{'='*140}")
+    print("COMPUTATIONAL COST COMPARISON TABLE")
+    print(f"{'='*140}")
+    
+    # Header
+    header = f"{'Environment':<25} {'RLPD':>15} {'SAC':>15} {'IQL':>15} {'Cal-QL':>15} {'SPEQ':>15} {'PASPEQ O2O':>25} {'Reduction vs RLPD':>18}"
+    print(header)
+    print("-" * 140)
+    
+    # Data rows
+    total_reductions = []
+    
+    for _, row in df.iterrows():
+        env = row['Environment']
+        rlpd = row['RLPD']
+        sac = row['SAC']
+        iql = row['IQL']
+        calql = row['Cal-QL']
+        speq = row['SPEQ']
+        
+        paspeq_mean = row['PASPEQ_mean']
+        paspeq_std = row['PASPEQ_std']
+        
+        if not np.isnan(paspeq_mean):
+            paspeq_str = f"{paspeq_mean:,.0f} ± {paspeq_std:,.0f}"
+            reduction = (1 - paspeq_mean / rlpd) * 100
+            reduction_str = f"{reduction:.1f}%"
+            total_reductions.append(reduction)
+        else:
+            paspeq_str = "N/A"
+            reduction_str = "N/A"
+        
+        print(f"{env:<25} {rlpd:>15,} {sac:>15,} {iql:>15,} {calql:>15,} {speq:>15,} {paspeq_str:>25} {reduction_str:>18}")
+    
+    print("-" * 140)
+    
+    # Averages
+    avg_rlpd = df['RLPD'].mean()
+    avg_sac = df['SAC'].mean()
+    avg_iql = df['IQL'].mean()
+    avg_calql = df['Cal-QL'].mean()
+    avg_speq = df['SPEQ'].mean()
+    avg_paspeq = df['PASPEQ_mean'].mean()
+    avg_reduction = np.mean(total_reductions) if total_reductions else np.nan
+    
+    print(f"{'Average':<25} {avg_rlpd:>15,.0f} {avg_sac:>15,.0f} {avg_iql:>15,.0f} {avg_calql:>15,.0f} {avg_speq:>15,.0f} {avg_paspeq:>25,.0f} {avg_reduction:>17.1f}%")
+    print(f"{'='*140}")
+    
+    # Summary comparison
+    print(f"\n\nSUMMARY - Average Total Gradient Steps:")
+    print(f"  RLPD:       {avg_rlpd:>15,.0f} (baseline)")
+    print(f"  SAC:        {avg_sac:>15,.0f} ({(1 - avg_sac/avg_rlpd)*100:>6.1f}% reduction vs RLPD)")
+    print(f"  IQL:        {avg_iql:>15,.0f} ({(1 - avg_iql/avg_rlpd)*100:>6.1f}% reduction vs RLPD)")
+    print(f"  Cal-QL:     {avg_calql:>15,.0f} ({(1 - avg_calql/avg_rlpd)*100:>6.1f}% reduction vs RLPD)")
+    print(f"  SPEQ:       {avg_speq:>15,.0f} ({(1 - avg_speq/avg_rlpd)*100:>6.1f}% reduction vs RLPD)")
+    print(f"  PASPEQ O2O: {avg_paspeq:>15,.0f} ({avg_reduction:>6.1f}% reduction vs RLPD)")
+    
+    return df
+
+def export_latex_table(df, output_path, online_steps=300000, offline_pretrain=300000):
+    """Export results as LaTeX table with fixed costs in header and per-environment PASPEQ."""
+    
+    # Fixed costs (constant across all environments)
+    rlpd_total = online_steps * 201
+    sac_total = online_steps * 3
+    iql_total = online_steps * 4 + offline_pretrain * 4
+    calql_total = online_steps * 3 + offline_pretrain * 3
+    speq_total = online_steps * 3 + (online_steps // 10000) * 75000 * 2
+    
+    latex = r"""\begin{table}[t]
+\centering
+\caption{Computational Cost Comparison: Total Gradient Steps}
+\label{tab:gradient_steps}
+\small
+\begin{tabular}{lcccccc}
+\toprule
+"""
+    
+    # Header row 1: Fixed algorithm costs
+    latex += r"\multicolumn{7}{l}{\textbf{Fixed Costs (constant across environments):}}" + "\n"
+    latex += r"\\" + "\n"
+    latex += f"\\multicolumn{{7}}{{l}}{{RLPD: {rlpd_total/1e6:.2f}M \\quad SAC: {sac_total/1e6:.2f}M \\quad IQL: {iql_total/1e6:.2f}M \\quad Cal-QL: {calql_total/1e6:.2f}M \\quad SPEQ: {speq_total/1e6:.2f}M}}" + "\n"
+    latex += r"\\" + "\n"
+    latex += r"\midrule" + "\n"
+    
+    # Header row 2: Per-environment columns
+    latex += r"\textbf{Environment} & \textbf{Offline Epochs} & \textbf{PASPEQ Total} & \textbf{vs RLPD} & \textbf{vs IQL} & \textbf{vs Cal-QL} & \textbf{vs SPEQ} \\" + "\n"
+    latex += r"\midrule" + "\n"
+    
+    # Data rows
+    for _, row in df.iterrows():
+        env = row['Environment']
+        paspeq_mean = row['PASPEQ_mean']
+        paspeq_std = row['PASPEQ_std']
+        offline_epochs = row['PASPEQ_offline_epochs']
+        
+        if not np.isnan(paspeq_mean):
+            offline_str = f"{offline_epochs/1e3:.0f}k"
+            paspeq_str = f"{paspeq_mean/1e6:.2f}M $\\pm$ {paspeq_std/1e3:.0f}k"
+            
+            red_rlpd = (1 - paspeq_mean / rlpd_total) * 100
+            red_iql = (1 - paspeq_mean / iql_total) * 100
+            red_calql = (1 - paspeq_mean / calql_total) * 100
+            red_speq = (1 - paspeq_mean / speq_total) * 100
+            
+            latex += f"{env} & {offline_str} & {paspeq_str} & {red_rlpd:.1f}\\% & {red_iql:.1f}\\% & {red_calql:.1f}\\% & {red_speq:.1f}\\% \\\\\n"
+        else:
+            latex += f"{env} & N/A & N/A & N/A & N/A & N/A & N/A \\\\\n"
+    
+    latex += r"\midrule" + "\n"
+    
+    # Average row
+    avg_paspeq = df['PASPEQ_mean'].mean()
+    avg_offline = df['PASPEQ_offline_epochs'].mean()
+    
+    avg_red_rlpd = (1 - avg_paspeq / rlpd_total) * 100
+    avg_red_iql = (1 - avg_paspeq / iql_total) * 100
+    avg_red_calql = (1 - avg_paspeq / calql_total) * 100
+    avg_red_speq = (1 - avg_paspeq / speq_total) * 100
+    
+    latex += f"\\textbf{{Average}} & {avg_offline/1e3:.0f}k & {avg_paspeq/1e6:.2f}M & {avg_red_rlpd:.1f}\\% & {avg_red_iql:.1f}\\% & {avg_red_calql:.1f}\\% & {avg_red_speq:.1f}\\% \\\\\n"
+    
+    latex += r"""\bottomrule
+\end{tabular}
+\end{table}
+"""
+    
+    with open(output_path, 'w') as f:
+        f.write(latex)
+    
+    print(f"\nLaTeX table saved to: {output_path}")
 
 if __name__ == "__main__":
-    import os
-    
     parser = argparse.ArgumentParser()
     parser.add_argument("--dataset", type=str, default="expert", choices=["expert", "medium", "simple"])
+    parser.add_argument("--online-steps", type=int, default=300000, help="Online training steps")
+    parser.add_argument("--offline-pretrain", type=int, default=300000, help="IQL/CalQL offline pretraining steps")
+    parser.add_argument("--output-latex", type=str, default="gradient_steps_table.tex", help="LaTeX output file")
     args = parser.parse_args()
     
     entity = "carlo-romeo-alt427"
     project = "SPEQ"
     
     valid_seeds = {0, 42, 1234, 5678, 9876}
-    algorithms = ['paspeq_o2o', 'rlpd']
     
     all_envs = ["Humanoid-v5", "Ant-v5", "HalfCheetah-v5", "Hopper-v5", "Walker2d-v5",
                 "InvertedPendulum-v5", "InvertedDoublePendulum-v5", "Pusher-v5", "Reacher-v5", "Swimmer-v5"]
     simple_only_envs = ["Humanoid-v5", "Ant-v5", "HalfCheetah-v5", "Hopper-v5", "Walker2d-v5"]
     
-    # Filter environments based on dataset
     if args.dataset == "simple":
         environments = simple_only_envs
     else:
         environments = all_envs
     
-    print(f"Using seeds: {sorted(valid_seeds)}")
-    print(f"Algorithms: {algorithms}")
+    print(f"Seeds: {sorted(valid_seeds)}")
     print(f"Environments: {len(environments)}")
     
-    fig = plot_reward_vs_gradient_steps(entity, project, environments, algorithms, valid_seeds, args.dataset)
+    df = compute_gradient_steps_table(
+        entity, project, environments, valid_seeds, args.dataset,
+        online_steps=args.online_steps,
+        offline_pretrain_iql_calql=args.offline_pretrain
+    )
     
-    if fig:
-        # Create directories if they don't exist
-        os.makedirs("Plots/pdf", exist_ok=True)
-        os.makedirs("Plots/png", exist_ok=True)
-        
-        plt.savefig(f"Plots/pdf/Reward_vs_Gradient_Steps_{args.dataset}.pdf", dpi=300, bbox_inches="tight")
-        plt.savefig(f"Plots/png/Reward_vs_Gradient_Steps_{args.dataset}.png", dpi=300, bbox_inches="tight")
-        print("\n\nPlot saved")
-        plt.show()
+    format_table(df, online_steps=args.online_steps)
+    export_latex_table(df, args.output_latex, online_steps=args.online_steps, offline_pretrain=args.offline_pretrain)
