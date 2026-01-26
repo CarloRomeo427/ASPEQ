@@ -26,72 +26,187 @@ gym.register_envs(gymnasium_robotics)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Environment Suite Detection
+# Environment Configuration
 # ─────────────────────────────────────────────────────────────────────────────
 
-MUJOCO_ENVS = {'hopper', 'halfcheetah', 'walker2d', 'ant', 'swimmer', 'humanoid'}
+# Canonical environment names (user-friendly short names)
+MUJOCO_ENVS = {
+    'hopper', 'halfcheetah', 'walker2d', 'ant', 'swimmer', 'humanoid',
+    'invertedpendulum', 'inverteddoublependulum', 'pusher', 'reacher'
+}
+ANTMAZE_SIZES = {'umaze', 'medium', 'large'}
 ADROIT_ENVS = {'pen', 'door', 'hammer', 'relocate'}
 
+# Latest versions
+MUJOCO_ENV_VERSION = 'v5'
+MUJOCO_DATASET_VERSION = 'v0'
+ANTMAZE_ENV_VERSION = 'v5'  # Updated: v5 is latest
+ANTMAZE_DATASET_VERSION = 'v1'  # D4RL datasets use v1
+ADROIT_ENV_VERSION = 'v1'
+ADROIT_DATASET_VERSION = 'v2'
 
-def get_env_suite(env_name: str) -> str:
-    """Determine which environment suite an environment belongs to."""
-    env_lower = env_name.lower()
-    base_name = env_lower.split('-')[0]
+
+def normalize_env_name(env_name: str) -> tuple:
+    """
+    Normalize user-provided environment name to canonical form.
     
-    if base_name in MUJOCO_ENVS:
-        return 'mujoco'
-    if env_lower.startswith('antmaze'):
-        return 'antmaze'
-    if base_name in ADROIT_ENVS:
-        return 'adroit'
+    Accepts various formats:
+    - MuJoCo: 'hopper', 'Hopper', 'Hopper-v5', 'hopper-v4' → ('hopper', 'mujoco')
+    - AntMaze: 'antmaze-large', 'antmaze-medium', 'AntMaze_Large' → ('large', 'antmaze')
+    - Adroit: 'door', 'pen', 'hammer', 'relocate' → ('door', 'adroit')
     
-    raise ValueError(f"Unknown environment: {env_name}")
+    Returns:
+        (canonical_name, env_suite) tuple
+    """
+    env_lower = env_name.lower().replace('_', '-')
+    
+    # Strip version suffix if present (e.g., -v5, -v4)
+    base = env_lower
+    if '-v' in env_lower:
+        parts = env_lower.rsplit('-v', 1)
+        if parts[1].isdigit():
+            base = parts[0]
+    
+    # Check MuJoCo
+    for mujoco_env in MUJOCO_ENVS:
+        if base == mujoco_env or base.startswith(mujoco_env + '-'):
+            return mujoco_env, 'mujoco'
+    
+    # Check AntMaze
+    if 'antmaze' in base:
+        # Extract size: antmaze-large → large
+        for size in ANTMAZE_SIZES:
+            if size in base:
+                return size, 'antmaze'
+        return 'umaze', 'antmaze'  # default
+    
+    # Check Adroit
+    for adroit_env in ADROIT_ENVS:
+        if base == adroit_env or base.startswith(adroit_env + '-'):
+            return adroit_env, 'adroit'
+    
+    raise ValueError(f"Unknown environment: {env_name}. "
+                     f"Supported: MuJoCo ({', '.join(sorted(MUJOCO_ENVS))}), "
+                     f"AntMaze (antmaze-umaze/medium/large), "
+                     f"Adroit ({', '.join(sorted(ADROIT_ENVS))})")
+
+
+def get_gymnasium_env_name(canonical_name: str, env_suite: str) -> str:
+    """Convert canonical name to Gymnasium environment ID."""
+    if env_suite == 'mujoco':
+        # hopper → Hopper-v5
+        name_map = {
+            'hopper': 'Hopper',
+            'halfcheetah': 'HalfCheetah',
+            'walker2d': 'Walker2d',
+            'ant': 'Ant',
+            'swimmer': 'Swimmer',
+            'humanoid': 'Humanoid',
+            'invertedpendulum': 'InvertedPendulum',
+            'inverteddoublependulum': 'InvertedDoublePendulum',
+            'pusher': 'Pusher',
+            'reacher': 'Reacher',
+        }
+        return f"{name_map[canonical_name]}-{MUJOCO_ENV_VERSION}"
+    
+    elif env_suite == 'antmaze':
+        # large → AntMaze_Large-v4
+        size_map = {'umaze': 'UMaze', 'medium': 'Medium', 'large': 'Large'}
+        return f"AntMaze_{size_map[canonical_name]}-{ANTMAZE_ENV_VERSION}"
+    
+    elif env_suite == 'adroit':
+        # door → AdroitHandDoor-v1
+        task_map = {
+            'pen': 'AdroitHandPen',
+            'door': 'AdroitHandDoor',
+            'hammer': 'AdroitHandHammer',
+            'relocate': 'AdroitHandRelocate',
+        }
+        return f"{task_map[canonical_name]}-{ADROIT_ENV_VERSION}"
+    
+    raise ValueError(f"Unknown env_suite: {env_suite}")
+
+
+def get_minari_dataset_name(canonical_name: str, quality: str, env_suite: str) -> str:
+    """
+    Get Minari dataset name using latest versions.
+    
+    Dataset naming:
+    - MuJoCo: mujoco/{env}/{quality}-v0
+    - AntMaze: D4RL/antmaze/{size}-{quality}-v1 or D4RL/antmaze/{size}-v1
+    - Adroit: D4RL/{task}/{quality}-v2
+    """
+    if env_suite == 'mujoco':
+        return f"mujoco/{canonical_name}/{quality}-{MUJOCO_DATASET_VERSION}"
+    
+    elif env_suite == 'antmaze':
+        # AntMaze datasets: D4RL/antmaze/{size}-v1 or D4RL/antmaze/{size}-{quality}-v1
+        # Quality options: diverse, play (umaze basic is just umaze-v1)
+        if quality in ['diverse', 'play']:
+            return f"D4RL/antmaze/{canonical_name}-{quality}-{ANTMAZE_DATASET_VERSION}"
+        else:
+            # Default/basic dataset (no quality suffix)
+            return f"D4RL/antmaze/{canonical_name}-{ANTMAZE_DATASET_VERSION}"
+    
+    elif env_suite == 'adroit':
+        return f"D4RL/{canonical_name}/{quality}-{ADROIT_DATASET_VERSION}"
+    
+    raise ValueError(f"Unknown env_suite: {env_suite}")
+
+
+def get_display_name(canonical_name: str, env_suite: str, quality: str) -> str:
+    """Get human-readable display name for WandB logging."""
+    if env_suite == 'mujoco':
+        return f"{canonical_name}-{quality}"
+    elif env_suite == 'antmaze':
+        if quality in ['diverse', 'play']:
+            return f"antmaze-{canonical_name}-{quality}"
+        return f"antmaze-{canonical_name}"
+    elif env_suite == 'adroit':
+        return f"{canonical_name}-{quality}"
+    return f"{canonical_name}-{quality}"
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Dropout Rate Selection
 # ─────────────────────────────────────────────────────────────────────────────
 
-def get_dropout_rate(env_name: str, target_drop_rate: float = -1.0) -> float:
+def get_dropout_rate(canonical_name: str, env_suite: str, target_drop_rate: float = -1.0) -> float:
     """
     Get dropout rate based on environment complexity.
     
-    Dropout rates scale with state-action space dimensionality:
-    - Higher dimensional environments benefit from more regularization
-    - Pattern: dropout ≈ f(obs_dim, act_dim)
-    
     Args:
-        env_name: Environment name
+        canonical_name: Canonical environment name (e.g., 'hopper', 'large', 'door')
+        env_suite: Environment suite ('mujoco', 'antmaze', 'adroit')
         target_drop_rate: If >= 0, use this value directly. If < 0, auto-select.
     
     Returns:
         Dropout rate for target Q-networks
     """
-    # If explicit rate provided, use it
     if target_drop_rate >= 0:
         return target_drop_rate
     
-    env_lower = env_name.lower()
+    if env_suite == 'mujoco':
+        # High dimensional
+        if canonical_name == 'humanoid':
+            return 0.1
+        # Medium-high dimensional
+        if canonical_name == 'ant':
+            return 0.01
+        # Medium dimensional
+        if canonical_name in ['walker2d', 'halfcheetah', 'pusher']:
+            return 0.005
+        # Low dimensional
+        if canonical_name in ['hopper', 'swimmer', 'reacher', 'invertedpendulum', 'inverteddoublependulum']:
+            return 0.001
     
-    # MuJoCo - High dimensional (obs=376, act=17)
-    if 'humanoid' in env_lower:
-        return 0.1
-    
-    # Adroit - High-DoF hand manipulation (obs=39-46, act=24-30)
-    if any(x in env_lower for x in ['pen', 'door', 'hammer', 'relocate']):
-        return 0.05
-    
-    # AntMaze (obs=29+2, act=8) and Ant (obs=27, act=8) - Medium-high dimensional
-    if 'antmaze' in env_lower or 'ant' in env_lower:
+    elif env_suite == 'antmaze':
+        # Same as Ant (similar dimensionality)
         return 0.01
     
-    # MuJoCo - Medium dimensional (obs=17, act=6)
-    if any(x in env_lower for x in ['walker', 'halfcheetah', 'pusher']):
-        return 0.005
-    
-    # MuJoCo - Low dimensional (obs=8-11, act=2-3)
-    if any(x in env_lower for x in ['hopper', 'swimmer', 'reacher', 'pendulum']):
-        return 0.001
+    elif env_suite == 'adroit':
+        # High-DoF hand manipulation
+        return 0.05
     
     return 0.005  # Default
 
@@ -125,51 +240,31 @@ class FlattenObsWrapper(gym.ObservationWrapper):
 # Environment Creation
 # ─────────────────────────────────────────────────────────────────────────────
 
-def make_env(env_name: str, env_suite: str, quality: str = None):
+def make_env(canonical_name: str, env_suite: str, quality: str = None):
     """Create environment using Gymnasium API."""
     import minari
     
     # For goal-conditioned envs with offline data, recover from Minari dataset
     if env_suite in ['antmaze', 'adroit'] and quality is not None:
         try:
-            dataset_name = get_minari_dataset_name(env_name, quality, env_suite)
+            dataset_name = get_minari_dataset_name(canonical_name, quality, env_suite)
             dataset = minari.load_dataset(dataset_name)
             env = dataset.recover_environment()
-            env = FlattenObsWrapper(env)
+            if isinstance(env.observation_space, gym.spaces.Dict):
+                env = FlattenObsWrapper(env)
             return env
         except Exception as e:
             print(f"Failed to recover from dataset: {e}, falling back to gym.make")
     
-    # Standard path for MuJoCo
-    if env_suite == 'mujoco':
-        return gym.make(env_name)
+    # Get Gymnasium environment name
+    gym_name = get_gymnasium_env_name(canonical_name, env_suite)
+    env = gym.make(gym_name)
     
-    # AntMaze
-    if env_suite == 'antmaze':
-        parts = env_name.lower().replace('antmaze-', '').split('-')
-        maze_type = parts[0].capitalize() if parts else 'Umaze'
-        gym_name = f'AntMaze_{maze_type}-v4'
-        env = gym.make(gym_name)
-        if isinstance(env.observation_space, gym.spaces.Dict):
-            env = FlattenObsWrapper(env)
-        return env
+    # Wrap if dict observation space
+    if isinstance(env.observation_space, gym.spaces.Dict):
+        env = FlattenObsWrapper(env)
     
-    # Adroit
-    if env_suite == 'adroit':
-        base_name = env_name.lower().split('-')[0]
-        task_map = {
-            'pen': 'AdroitHandPen-v1',
-            'door': 'AdroitHandDoor-v1',
-            'hammer': 'AdroitHandHammer-v1',
-            'relocate': 'AdroitHandRelocate-v1'
-        }
-        gym_name = task_map.get(base_name, env_name)
-        env = gym.make(gym_name)
-        if isinstance(env.observation_space, gym.spaces.Dict):
-            env = FlattenObsWrapper(env)
-        return env
-    
-    return gym.make(env_name)
+    return env
 
 
 def get_env_info(env):
@@ -189,45 +284,14 @@ def get_env_info(env):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Dataset Loading (All via Minari)
+# Dataset Loading
 # ─────────────────────────────────────────────────────────────────────────────
 
-def get_minari_dataset_name(env_name: str, quality: str, env_suite: str) -> str:
-    """Get Minari dataset name for any supported environment."""
-    env_lower = env_name.lower()
-    
-    if env_suite == 'mujoco':
-        base_name = env_lower.split('-')[0]
-        return f'mujoco/{base_name}/{quality}-v0'
-    
-    elif env_suite == 'antmaze':
-        parts = env_lower.replace('antmaze-', '').split('-')
-        maze_type = parts[0] if parts else 'umaze'
-        
-        # Check if quality is embedded in env_name
-        embedded_quality = None
-        if len(parts) >= 2 and parts[1] in ['diverse', 'play']:
-            embedded_quality = parts[1]
-        
-        effective_quality = embedded_quality if embedded_quality and quality == 'expert' else quality
-        
-        if effective_quality in ['v1', 'basic', None, 'expert'] or (maze_type == 'umaze' and effective_quality not in ['diverse', 'play']):
-            return f'D4RL/antmaze/{maze_type}-v1'
-        else:
-            return f'D4RL/antmaze/{maze_type}-{effective_quality}-v1'
-    
-    elif env_suite == 'adroit':
-        base_name = env_lower.split('-')[0]
-        return f'D4RL/{base_name}/{quality}-v2'
-    
-    raise ValueError(f"Cannot determine Minari dataset for: {env_name}")
-
-
-def load_minari_dataset(agent, env_name: str, quality: str, env_suite: str, compute_mc_returns: bool = False):
-    """Load Minari dataset into agent's offline buffer. Works for all environment suites."""
+def load_minari_dataset(agent, canonical_name: str, quality: str, env_suite: str, compute_mc_returns: bool = False):
+    """Load Minari dataset into agent's offline buffer."""
     import minari
     
-    dataset_name = get_minari_dataset_name(env_name, quality, env_suite)
+    dataset_name = get_minari_dataset_name(canonical_name, quality, env_suite)
     print(f"Loading Minari dataset: {dataset_name}")
     
     try:
@@ -316,7 +380,7 @@ def get_algo_config(algo_name: str, args, dropout_rate: float) -> dict:
         'num_Q': args.num_q,
         'utd_ratio': args.utd_ratio,
         'layer_norm': args.layer_norm,
-        'target_drop_rate': dropout_rate if algo in ['speq', 'speq_o2o', 'faspeq_o2o', 'faspeq_td_val'] else 0.0,
+        'target_drop_rate': dropout_rate,
     }
     
     if algo == 'iql':
@@ -418,14 +482,17 @@ def train(args):
     device = torch.device(f"cuda:{args.gpu_id}" if torch.cuda.is_available() else "cpu")
     print(f"Device: {device}")
     
-    # Determine environment suite
-    env_suite = get_env_suite(args.env)
-    print(f"Environment suite: {env_suite}")
+    # Normalize environment name
+    canonical_name, env_suite = normalize_env_name(args.env)
+    gym_env_name = get_gymnasium_env_name(canonical_name, env_suite)
+    display_name = get_display_name(canonical_name, env_suite, args.dataset_quality)
+    
+    print(f"Environment: {args.env} → {gym_env_name} (suite: {env_suite})")
     
     # Environment - pass quality for goal-conditioned envs to recover from dataset
     quality = args.dataset_quality if args.use_offline_data else None
-    env = make_env(args.env, env_suite, quality)
-    test_env = make_env(args.env, env_suite, quality)
+    env = make_env(canonical_name, env_suite, quality)
+    test_env = make_env(canonical_name, env_suite, quality)
     obs_dim, act_dim, act_limit, max_ep_len = get_env_info(env)
     max_ep_len = min(args.max_ep_len, max_ep_len)
     
@@ -437,14 +504,14 @@ def train(args):
     np.random.seed(args.seed)
     
     # Compute dropout rate
-    dropout_rate = get_dropout_rate(args.env, args.target_drop_rate)
+    dropout_rate = get_dropout_rate(canonical_name, env_suite, args.target_drop_rate)
     
     # Create agent
     AgentClass = get_agent_class(args.algo)
     algo_config = get_algo_config(args.algo, args, dropout_rate)
     
     agent = AgentClass(
-        env_name=args.env,
+        env_name=gym_env_name,
         obs_dim=obs_dim,
         act_dim=act_dim,
         act_limit=act_limit,
@@ -453,12 +520,12 @@ def train(args):
         **algo_config
     )
     
-    print(f"Algorithm: {args.algo}, Env: {args.env}, obs_dim: {obs_dim}, act_dim: {act_dim}, dropout: {dropout_rate}")
+    print(f"Algorithm: {args.algo}, Env: {display_name}, obs_dim: {obs_dim}, act_dim: {act_dim}, dropout: {dropout_rate}")
     
     # Load offline data
     if args.use_offline_data:
         compute_mc = args.algo.lower() == 'calql'
-        load_minari_dataset(agent, args.env, args.dataset_quality, env_suite, compute_mc)
+        load_minari_dataset(agent, canonical_name, args.dataset_quality, env_suite, compute_mc)
         
         # Offline pretraining for IQL/CalQL
         if args.algo.lower() in ['iql', 'calql'] and args.offline_pretrain_steps > 0:
@@ -522,7 +589,8 @@ def parse_args():
     # Basic
     parser.add_argument("--algo", type=str, default='iql',
                         choices=['iql', 'calql', 'rlpd', 'speq', 'speq_o2o', 'faspeq_o2o', 'faspeq_td_val'])
-    parser.add_argument("--env", type=str, default='Hopper-v5')
+    parser.add_argument("--env", type=str, default='hopper',
+                        help="Environment name (short: hopper, antmaze-large, door; or full: Hopper-v5)")
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--epochs", type=int, default=300)
     parser.add_argument("--steps-per-epoch", type=int, default=1000)
@@ -570,7 +638,13 @@ def parse_args():
 if __name__ == '__main__':
     args = parse_args()
     
-    exp_name = f"{args.algo}_{args.env}_{args.dataset_quality}"
+    # Normalize environment name and build exp_name
+    canonical_name, env_suite = normalize_env_name(args.env)
+    display_name = get_display_name(canonical_name, env_suite, args.dataset_quality)
+    
+    # WandB run name: algo_display-name_seed
+    # Examples: speq_hopper-expert_1234, iql_antmaze-large-diverse_0, calql_door-human_42
+    exp_name = f"{args.algo}_{display_name}_{args.seed}"
     
     wandb.init(
         name=exp_name,
