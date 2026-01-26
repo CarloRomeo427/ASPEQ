@@ -1,6 +1,6 @@
 #!/bin/bash
-for seed in 0 42 1234; do
-    for env in Humanoid-v5 Ant-v5 HalfCheetah-v5; do
-        python main.py --env $env --seed $seed --log-wandb --algo speq_o2o --gpu-id 0 --use-minari --minari-quality simple
+for seed in 0; do
+    for quality in diverse play; do
+        python main.py --algo speq --env antmaze-large --use-offline-data --dataset-quality $quality --seed $seed --log-wandb 
     done
 done

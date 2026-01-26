@@ -49,6 +49,54 @@ def get_env_suite(env_name: str) -> str:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Dropout Rate Selection
+# ─────────────────────────────────────────────────────────────────────────────
+
+def get_dropout_rate(env_name: str, target_drop_rate: float = -1.0) -> float:
+    """
+    Get dropout rate based on environment complexity.
+    
+    Dropout rates scale with state-action space dimensionality:
+    - Higher dimensional environments benefit from more regularization
+    - Pattern: dropout ≈ f(obs_dim, act_dim)
+    
+    Args:
+        env_name: Environment name
+        target_drop_rate: If >= 0, use this value directly. If < 0, auto-select.
+    
+    Returns:
+        Dropout rate for target Q-networks
+    """
+    # If explicit rate provided, use it
+    if target_drop_rate >= 0:
+        return target_drop_rate
+    
+    env_lower = env_name.lower()
+    
+    # MuJoCo - High dimensional (obs=376, act=17)
+    if 'humanoid' in env_lower:
+        return 0.1
+    
+    # Adroit - High-DoF hand manipulation (obs=39-46, act=24-30)
+    if any(x in env_lower for x in ['pen', 'door', 'hammer', 'relocate']):
+        return 0.05
+    
+    # AntMaze (obs=29+2, act=8) and Ant (obs=27, act=8) - Medium-high dimensional
+    if 'antmaze' in env_lower or 'ant' in env_lower:
+        return 0.01
+    
+    # MuJoCo - Medium dimensional (obs=17, act=6)
+    if any(x in env_lower for x in ['walker', 'halfcheetah', 'pusher']):
+        return 0.005
+    
+    # MuJoCo - Low dimensional (obs=8-11, act=2-3)
+    if any(x in env_lower for x in ['hopper', 'swimmer', 'reacher', 'pendulum']):
+        return 0.001
+    
+    return 0.005  # Default
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Observation Wrapper for Goal-Conditioned Environments
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -259,7 +307,7 @@ def get_agent_class(algo_name: str):
     return getattr(module, class_name)
 
 
-def get_algo_config(algo_name: str, args) -> dict:
+def get_algo_config(algo_name: str, args, dropout_rate: float) -> dict:
     """Get algorithm-specific configuration."""
     algo = algo_name.lower()
     
@@ -268,6 +316,7 @@ def get_algo_config(algo_name: str, args) -> dict:
         'num_Q': args.num_q,
         'utd_ratio': args.utd_ratio,
         'layer_norm': args.layer_norm,
+        'target_drop_rate': dropout_rate if algo in ['speq', 'speq_o2o', 'faspeq_o2o', 'faspeq_td_val'] else 0.0,
     }
     
     if algo == 'iql':
@@ -387,9 +436,12 @@ def train(args):
     torch.manual_seed(args.seed)
     np.random.seed(args.seed)
     
+    # Compute dropout rate
+    dropout_rate = get_dropout_rate(args.env, args.target_drop_rate)
+    
     # Create agent
     AgentClass = get_agent_class(args.algo)
-    algo_config = get_algo_config(args.algo, args)
+    algo_config = get_algo_config(args.algo, args, dropout_rate)
     
     agent = AgentClass(
         env_name=args.env,
@@ -401,7 +453,7 @@ def train(args):
         **algo_config
     )
     
-    print(f"Algorithm: {args.algo}, Env: {args.env}, obs_dim: {obs_dim}, act_dim: {act_dim}")
+    print(f"Algorithm: {args.algo}, Env: {args.env}, obs_dim: {obs_dim}, act_dim: {act_dim}, dropout: {dropout_rate}")
     
     # Load offline data
     if args.use_offline_data:
@@ -485,6 +537,8 @@ def parse_args():
     parser.add_argument("--layer-norm", action="store_true", default=True)
     parser.add_argument("--no-layer-norm", dest="layer_norm", action="store_false")
     parser.add_argument("--start-steps", type=int, default=5000)
+    parser.add_argument("--target-drop-rate", type=float, default=-1.0,
+                        help="Dropout rate for target Q-networks. -1 for auto-selection based on env.")
     
     # Offline data
     parser.add_argument("--use-offline-data", action="store_true")
