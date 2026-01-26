@@ -1,50 +1,95 @@
-# SPEQ: Offline Stabilization Phases for Efficient Q-Learning 🤖
-[![arXiv](https://img.shields.io/badge/arXiv-Paper-<COLOR>.svg)](http://arxiv.org/abs/2501.08669)
+# Offline-to-Online Reinforcement Learning
 
-Welcome to the official repository for **SPEQ**, a novel reinforcement learning algorithm designed to optimize computational efficiency while maintaining high sample efficiency.
+## Algorithms
 
-## Overview
+| Algorithm | Stabilization Trigger | Stabilization Length | Sampling | Early Stopping |
+|-----------|----------------------|---------------------|----------|----------------|
+| **SPEQ** | Every 10k steps | Fixed 75k | Online only | No |
+| **SPEQ_O2O** | Every 10k steps | Fixed 75k | 50/50 mix | No |
+| **FASPEQ_O2O** | Every 10k steps | Up to 75k | 50/50 mix | Policy loss on val |
+| **FASPEQ_TD_VAL** | Every 10k steps | Up to 75k | 50/50 mix | TD error on val |
+| **IQL** | - | - | Configurable | - |
+| **CalQL** | - | - | Configurable | - |
+| **RLPD** | - | - | 50/50 mix | - |
 
-SPEQ addresses the challenge of computational inefficiency in high update-to-data (UTD) reinforcement learning methods. It strategically combines low-UTD online training with periodic high-UTD offline stabilization phases. This approach significantly reduces unnecessary gradient computations and improves overall training efficiency.
-
-## Key Benefits
-
-- 🕒 **Reduced Training Time:** Decreases total training time by up to 78%.
-- 🌱 **Computationally Efficient:** Performs up to 99% fewer gradient updates.
-- 📊 **Improved Performance:** Maintains competitive results compared to state-of-the-art methods.
-- 🔄 **Structured Updates:** Periodic offline stabilization phases mitigate overfitting and enhance learning stability.
-
-## Results
-
-Empirical evaluations demonstrate SPEQ's ability to achieve state-of-the-art performance with fewer computational resources. Detailed results and comparisons are available in our published paper.
-
-## Getting Started
-
-Follow these instructions to set up and run SPEQ:
+## Installation
 
 ```bash
-git clone https://github.com/CarloRomeo427/SPEQ.git
-cd SPEQ
-pip install -r requirements.txt
-python main.py
+pip install gymnasium minari gymnasium-robotics wandb torch numpy
 ```
 
-## Future Work
+## Usage
 
-Future enhancements include automatic determination of the timing and duration of stabilization phases, further optimizing computational efficiency.
+### MuJoCo (via Minari)
 
-## Acknowledgements
+```bash
+# IQL on Hopper with expert data
+python main.py --algo iql --env Hopper-v5 --use-offline-data --log-wandb
 
-This implementation is inspired by the work on Dropout Q-Functions by Takuya Hiraoka et al., available at https://github.com/TakuyaHiraoka/Dropout-Q-Functions-for-Doubly-Efficient-Reinforcement-Learning.
+# SPEQ_O2O on HalfCheetah with medium data
+python main.py --algo speq_o2o --env HalfCheetah-v5 --use-offline-data --dataset-quality medium
 
-## Citation
-```bibtex
-@article{romeo2025speq,
-  title={SPEQ: Offline Stabilization Phases for Efficient Q-Learning in High Update-To-Data Ratio Reinforcement Learning},
-  author={Romeo, Carlo and Macaluso, Girolamo and Sestini, Alessandro and Bagdanov, Andrew D},
-  journal={arXiv preprint arXiv:2501.08669},
-  year={2025}
-}
+# FASPEQ on Walker2d
+python main.py --algo faspeq_o2o --env Walker2d-v5 --use-offline-data
 ```
 
-Happy training! 🚀
+### AntMaze (via Gymnasium-Robotics + Minari)
+
+Environment naming: `antmaze-{size}` where size is `umaze`, `medium`, or `large`
+Dataset qualities: `v1` (basic), `diverse`, `play`
+
+```bash
+# IQL on AntMaze-umaze
+python main.py --algo iql --env antmaze-umaze --use-offline-data --log-wandb
+
+# CalQL on AntMaze-medium with diverse dataset
+python main.py --algo calql --env antmaze-medium --use-offline-data --dataset-quality diverse
+
+# FASPEQ on AntMaze-large with play dataset
+python main.py --algo faspeq_o2o --env antmaze-large --use-offline-data --dataset-quality play
+```
+
+### Adroit (via Gymnasium-Robotics + Minari)
+
+Environment naming: `{task}` where task is `pen`, `door`, `hammer`, or `relocate`
+Dataset qualities: `human`, `cloned`, `expert`
+
+```bash
+# IQL on Door with human demonstrations
+python main.py --algo iql --env door --use-offline-data --dataset-quality human --log-wandb
+
+# CalQL on Hammer with cloned data
+python main.py --algo calql --env hammer --use-offline-data --dataset-quality cloned
+
+# SPEQ_O2O on Pen with expert data
+python main.py --algo speq_o2o --env pen --use-offline-data --dataset-quality expert
+
+# FASPEQ on Relocate with human data
+python main.py --algo faspeq_o2o --env relocate --use-offline-data --dataset-quality human
+```
+
+## Key Arguments
+
+| Argument | Default | Description |
+|----------|---------|-------------|
+| `--algo` | `iql` | Algorithm |
+| `--env` | `Hopper-v5` | Environment |
+| `--seed` | `0` | Random seed |
+| `--epochs` | `300` | Training epochs |
+| `--use-offline-data` | `False` | Load offline dataset |
+| `--dataset-quality` | `expert` | Dataset quality (varies by env suite) |
+| `--log-wandb` | `False` | Enable WandB |
+
+### FASPEQ-specific
+
+| Argument | Default | Description |
+|----------|---------|-------------|
+| `--offline-epochs` | `75000` | Max epochs per stabilization |
+| `--val-patience` | `10000` | Early stopping patience |
+| `--val-check-interval` | `1000` | Validation check frequency |
+
+## Logged Metrics
+
+**Terminal:** epoch, step, EvalReward, time
+
+**WandB:** epoch, policy_loss, mean_q_loss, EvalReward, OfflineEpochs (SPEQ/FASPEQ), OfflineEvalReward (SPEQ/FASPEQ)
