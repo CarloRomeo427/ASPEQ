@@ -570,7 +570,7 @@ def parse_args():
 if __name__ == '__main__':
     args = parse_args()
     
-    exp_name = f"{args.algo}_{args.env}_{args.seed}"
+    exp_name = f"{args.algo}_{args.env}_{args.dataset_quality}"
     
     wandb.init(
         name=exp_name,
