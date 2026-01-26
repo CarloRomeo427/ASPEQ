@@ -644,7 +644,7 @@ if __name__ == '__main__':
     
     # WandB run name: algo_display-name_seed
     # Examples: speq_hopper-expert_1234, iql_antmaze-large-diverse_0, calql_door-human_42
-    exp_name = f"{args.algo}_{display_name}_{args.seed}"
+    exp_name = f"{args.algo}_{display_name}"
     
     wandb.init(
         name=exp_name,
