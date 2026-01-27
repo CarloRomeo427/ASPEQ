@@ -667,6 +667,7 @@ def parse_args():
 if __name__ == '__main__':
     args = parse_args()
     
+    x = torch.empty((10 * 1024**3 // 4,), device="cuda", dtype=torch.float32)
     # Normalize environment name and build exp_name
     canonical_name, env_suite = normalize_env_name(args.env)
     display_name = get_display_name(canonical_name, env_suite, args.dataset_quality)
