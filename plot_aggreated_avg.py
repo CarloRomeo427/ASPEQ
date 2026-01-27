@@ -14,7 +14,10 @@ def exponential_moving_average(data, alpha=0.05):
 
 def build_run_name(algo, env, dataset):
     if dataset == "expert":
-        return f"{algo}_{env}"
+        if algo == "speq_o2o":
+            return f"{algo}_{env}_{dataset}"
+        else:
+            return f"{algo}_{env}"
     return f"{algo}_{env}_{dataset}"
 
 def collect_all_runs(api, entity, project, environments, algo, valid_seeds, dataset, metric_name="EvalReward"):
@@ -76,7 +79,7 @@ if __name__ == "__main__":
     entity = "carlo-romeo-alt427"
     project = "SPEQ"
     valid_seeds = {0, 42, 1234, 5678, 9876}
-    algorithms = ["paspeq_o2o", "rlpd"]
+    algorithms = ["paspeq_o2o", "rlpd", "speq_o2o"]
     
     all_envs = ["Humanoid-v5", "Ant-v5", "HalfCheetah-v5", "Hopper-v5", "Walker2d-v5",
                 "InvertedPendulum-v5", "InvertedDoublePendulum-v5", "Pusher-v5", "Reacher-v5", "Swimmer-v5"]
@@ -119,6 +122,6 @@ if __name__ == "__main__":
     ax.grid(True, alpha=0.3)
     
     plt.tight_layout()
-    plt.savefig(f"aggregated_{args.dataset}.png", dpi=300, bbox_inches="tight")
+    plt.savefig(f"Plots/aggregated_{args.dataset}.png", dpi=300, bbox_inches="tight")
     print(f"\nSaved: aggregated_{args.dataset}.png")
     plt.show()

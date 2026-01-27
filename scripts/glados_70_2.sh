@@ -1,6 +1,8 @@
 #!/bin/bash
-for seed in 0 42 1234; do
-    for env in InvertedPendulum-v5 InvertedDoublePendulum-v5; do
-        python main.py --env $env --seed $seed --log-wandb --algo speq_o2o --gpu-id 1 --use-minari --minari-quality simple
+for seed in 42 1234; do
+    for env in Pusher-v5; do
+        for quality in expert; do
+            python main.py --algo speq_o2o --env $env --use-offline-data --dataset-quality $quality --seed $seed --log-wandb --gpu-id 1
+        done
     done
 done

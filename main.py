@@ -155,7 +155,7 @@ def get_minari_dataset_name(canonical_name: str, quality: str, env_suite: str) -
 def get_display_name(canonical_name: str, env_suite: str, quality: str) -> str:
     """Get human-readable display name for WandB logging."""
     if env_suite == 'mujoco':
-        return f"{canonical_name}-{quality}"
+        return f"{canonical_name}-v5_{quality}"
     elif env_suite == 'antmaze':
         if quality in ['diverse', 'play']:
             return f"antmaze-{canonical_name}-{quality}"
@@ -649,7 +649,7 @@ if __name__ == '__main__':
     
     # WandB run name: algo_display-name_seed
     # Examples: speq_hopper-expert_1234, iql_antmaze-large-diverse_0, calql_door-human_42
-    exp_name = f"{args.algo}_{display_name}"
+    exp_name = f"{args.algo}_{display_name.capitalize()}"
     
     wandb.init(
         name=exp_name,
