@@ -24,7 +24,7 @@ def weights_init_(m):
 
 class ReplayBuffer:
     """
-    A simple FIFO experience replay buffer
+    A simple FIFO experience replay buffer with support for index-based removal.
     """
 
     def __init__(self, obs_dim, act_dim, size):
@@ -42,6 +42,8 @@ class ReplayBuffer:
         self.episode_ids = np.zeros(size, dtype=np.int32)
         self.ptr, self.size, self.max_size = 0, 0, size
         self.current_episode_id = 0
+        self.obs_dim = obs_dim
+        self.act_dim = act_dim
 
     def store(self, obs, act, rew, next_obs, done):
         """
@@ -76,6 +78,58 @@ class ReplayBuffer:
                     rews=self.rews_buf[idxs],
                     done=self.done_buf[idxs],
                     idxs=idxs)
+
+    def sample_batch_with_indices(self, batch_size=32):
+        """
+        Sample a batch and return with the sampled indices for potential removal.
+        :param batch_size: size of minibatch
+        :return: mini-batch data as a dictionary including indices
+        """
+        idxs = np.random.randint(0, self.size, size=batch_size)
+        return dict(obs1=self.obs1_buf[idxs].copy(),
+                    obs2=self.obs2_buf[idxs].copy(),
+                    acts=self.acts_buf[idxs].copy(),
+                    rews=self.rews_buf[idxs].copy(),
+                    done=self.done_buf[idxs].copy(),
+                    idxs=idxs.copy())
+
+    def remove_indices(self, indices_to_remove):
+        """
+        Remove specified indices from the buffer by compacting remaining data.
+        This is an O(n) operation but maintains buffer integrity.
+        
+        :param indices_to_remove: array of indices to remove from buffer
+        """
+        if len(indices_to_remove) == 0:
+            return
+        
+        # Create mask for indices to keep
+        indices_to_remove = np.unique(indices_to_remove)
+        mask = np.ones(self.size, dtype=bool)
+        valid_indices = indices_to_remove[indices_to_remove < self.size]
+        mask[valid_indices] = False
+        
+        # Get indices of data to keep
+        keep_indices = np.where(mask)[0]
+        new_size = len(keep_indices)
+        
+        if new_size == 0:
+            # Buffer becomes empty
+            self.ptr = 0
+            self.size = 0
+            return
+        
+        # Compact the data
+        self.obs1_buf[:new_size] = self.obs1_buf[keep_indices]
+        self.obs2_buf[:new_size] = self.obs2_buf[keep_indices]
+        self.acts_buf[:new_size] = self.acts_buf[keep_indices]
+        self.rews_buf[:new_size] = self.rews_buf[keep_indices]
+        self.done_buf[:new_size] = self.done_buf[keep_indices]
+        self.episode_ids[:new_size] = self.episode_ids[keep_indices]
+        
+        # Update size and pointer
+        self.size = new_size
+        self.ptr = new_size % self.max_size
 
     def sample_batch_with_episode_ids(self, batch_size=32):
         """
@@ -137,10 +191,6 @@ class ReplayBuffer:
                 filtered_batches['rews'].append(all_batches['rews'][i])
                 filtered_batches['done'].append(all_batches['done'][i])
                 filtered_batches['episode_ids'].append(all_batches['episode_ids'][i])
-
-        # # Convert lists to numpy arrays for consistency
-        # for key in filtered_batches:
-        #     filtered_batches[key] = np.array(filtered_batches[key])
 
         return dict(obs1=filtered_batches['obs1'],
                     obs2=filtered_batches['obs2'],

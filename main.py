@@ -19,10 +19,10 @@ import numpy as np
 import torch
 import wandb
 import gymnasium as gym
-import gymnasium_robotics
+# import gymnasium_robotics
 
 # Register gymnasium-robotics environments
-gym.register_envs(gymnasium_robotics)
+# gym.register_envs(gymnasium_robotics)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -356,6 +356,7 @@ ALGORITHMS = {
     'speq_o2o': 'src.algos.agent_speq.SPEQAgent',
     'faspeq_o2o': 'src.algos.agent_faspeq.FASPEQAgent',
     'faspeq_td_val': 'src.algos.agent_faspeq.FASPEQAgent',
+    'faspeq_pct': 'src.algos.agent_faspeq.FASPEQAgent',  # NEW: percentage-based variant
 }
 
 
@@ -437,8 +438,9 @@ def get_algo_config(algo_name: str, args, dropout_rate: float) -> dict:
             'val_patience': args.val_patience,
             'use_td_val': False,
             'n_val_batches': args.n_val_batches,
+            'val_pct': 0.0,  # Use fixed batch count
             'o2o': True,
-            'target_drop_rate': dropout_rate,  # Dropout ONLY for FASPEQ O2O
+            'target_drop_rate': dropout_rate,
         })
     
     elif algo == 'faspeq_td_val':
@@ -450,8 +452,23 @@ def get_algo_config(algo_name: str, args, dropout_rate: float) -> dict:
             'val_patience': args.val_patience,
             'use_td_val': True,
             'n_val_batches': args.n_val_batches,
+            'val_pct': 0.0,  # Use fixed batch count
             'o2o': True,
-            'target_drop_rate': dropout_rate,  # Dropout ONLY for FASPEQ TD VAL
+            'target_drop_rate': dropout_rate,
+        })
+    
+    elif algo == 'faspeq_pct':
+        config.update({
+            'policy_update_delay': 20,
+            'offline_epochs': args.offline_epochs,
+            'trigger_interval': 10000,
+            'val_check_interval': args.val_check_interval,
+            'val_patience': args.val_patience,
+            'use_td_val': args.faspeq_pct_use_td,  # Can choose metric
+            'n_val_batches': 0,  # Not used when val_pct > 0
+            'val_pct': args.val_pct,  # Percentage-based
+            'o2o': True,
+            'target_drop_rate': dropout_rate,
         })
     
     return config
@@ -593,7 +610,8 @@ def parse_args():
     
     # Basic
     parser.add_argument("--algo", type=str, default='iql',
-                        choices=['iql', 'calql', 'rlpd', 'speq', 'speq_o2o', 'faspeq_o2o', 'faspeq_td_val'])
+                        choices=['iql', 'calql', 'rlpd', 'speq', 'speq_o2o', 
+                                 'faspeq_o2o', 'faspeq_td_val', 'faspeq_pct'])
     parser.add_argument("--env", type=str, default='hopper',
                         help="Environment name (short: hopper, antmaze-large, door; or full: Hopper-v5)")
     parser.add_argument("--seed", type=int, default=0)
@@ -637,6 +655,12 @@ def parse_args():
     parser.add_argument("--n-val-batches", type=int, default=5,
                         help="Number of batches from each buffer for validation (FASPEQ)")
     
+    # FASPEQ_PCT specific
+    parser.add_argument("--val-pct", type=float, default=0.1,
+                        help="Percentage of online buffer to use as validation set (FASPEQ_PCT)")
+    parser.add_argument("--faspeq-pct-use-td", action="store_true",
+                        help="Use TD error instead of policy loss for FASPEQ_PCT")
+    
     return parser.parse_args()
 
 
@@ -652,7 +676,13 @@ if __name__ == '__main__':
     if args.algo == 'faspeq_o2o':
         if args.val_patience != 10000:
             exp_name = f"faspeq_o2o_{display_name.capitalize()}_valpat{args.val_patience}" 
-    exp_name = f"{args.algo}_{display_name.capitalize()}"
+        else:
+            exp_name = f"faspeq_o2o_{display_name.capitalize()}"
+    elif args.algo == 'faspeq_pct':
+        metric = "td" if args.faspeq_pct_use_td else "pi"
+        exp_name = f"faspeq_pct{int(args.val_pct*100)}_{metric}_{display_name.capitalize()}"
+    else:
+        exp_name = f"{args.algo}_{display_name.capitalize()}"
     
     wandb.init(
         name=exp_name,
