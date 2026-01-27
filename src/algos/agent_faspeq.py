@@ -7,6 +7,7 @@ to reduce stabilization length when validation metrics plateau.
 Validation approach:
 - At start of each stabilization phase, sample and FIX validation batches
 - These batches are REMOVED from training buffers for the stabilization phase
+- After stabilization, validation data is RESTORED to the buffers
 - Early stopping based on policy loss (FASPEQ_O2O) or TD error (FASPEQ_TD_VAL)
 
 Variants:
@@ -83,25 +84,25 @@ class FASPEQAgent(SPEQAgent):
         self.val_pct = val_pct
         
         # Fixed validation batches (sampled at start of each stabilization)
+        # These store the actual data as torch tensors for validation evaluation
         self.val_batches_online = None
         self.val_batches_offline = None
         
-        # Store removed indices for potential restoration (if needed)
-        self._removed_online_indices = None
-        self._removed_offline_indices = None
+        # Store the raw numpy data for restoration after stabilization
+        self._removed_online_data = None  # dict with obs1, obs2, acts, rews, done
+        self._removed_offline_data = None  # dict with obs1, obs2, acts, rews, done
     
     def _sample_fixed_validation_batches(self):
         """
         Sample and fix validation batches at start of stabilization phase.
         REMOVES sampled data from both online and offline replay buffers.
+        Stores raw data for restoration after stabilization.
         
         If val_pct > 0: Sample val_pct% of online buffer size from each buffer
         Else: Sample n_val_batches * batch_size from each buffer
         """
         online_batches = []
         offline_batches = []
-        online_indices_to_remove = []
-        offline_indices_to_remove = []
         
         # Determine how many transitions to sample
         if self.val_pct > 0:
@@ -114,7 +115,7 @@ class FASPEQAgent(SPEQAgent):
         
         # Sample from online buffer
         if self.replay_buffer.size >= self.batch_size:
-            # Don't sample more than available
+            # Don't sample more than available (keep at least batch_size for training)
             n_online_samples = min(n_val_transitions, self.replay_buffer.size - self.batch_size)
             if n_online_samples >= self.batch_size:
                 # Sample indices without replacement
@@ -123,9 +124,17 @@ class FASPEQAgent(SPEQAgent):
                     size=n_online_samples, 
                     replace=False
                 )
-                online_indices_to_remove = all_online_indices.copy()
                 
-                # Convert to batches for validation
+                # Store raw data for restoration BEFORE removal
+                self._removed_online_data = {
+                    'obs1': self.replay_buffer.obs1_buf[all_online_indices].copy(),
+                    'obs2': self.replay_buffer.obs2_buf[all_online_indices].copy(),
+                    'acts': self.replay_buffer.acts_buf[all_online_indices].copy(),
+                    'rews': self.replay_buffer.rews_buf[all_online_indices].copy(),
+                    'done': self.replay_buffer.done_buf[all_online_indices].copy(),
+                }
+                
+                # Convert to batches for validation evaluation
                 n_complete_batches = n_online_samples // self.batch_size
                 for i in range(n_complete_batches):
                     start_idx = i * self.batch_size
@@ -139,6 +148,9 @@ class FASPEQAgent(SPEQAgent):
                         'rews': torch.FloatTensor(self.replay_buffer.rews_buf[batch_indices].copy()).unsqueeze(1).to(self.device),
                         'done': torch.FloatTensor(self.replay_buffer.done_buf[batch_indices].copy()).unsqueeze(1).to(self.device),
                     })
+                
+                # Remove from buffer
+                self.replay_buffer.remove_indices(all_online_indices)
         
         # Sample from offline buffer (same count as online for symmetry)
         if self.replay_buffer_offline.size >= self.batch_size:
@@ -150,8 +162,17 @@ class FASPEQAgent(SPEQAgent):
                     size=n_offline_samples,
                     replace=False
                 )
-                offline_indices_to_remove = all_offline_indices.copy()
                 
+                # Store raw data for restoration BEFORE removal
+                self._removed_offline_data = {
+                    'obs1': self.replay_buffer_offline.obs1_buf[all_offline_indices].copy(),
+                    'obs2': self.replay_buffer_offline.obs2_buf[all_offline_indices].copy(),
+                    'acts': self.replay_buffer_offline.acts_buf[all_offline_indices].copy(),
+                    'rews': self.replay_buffer_offline.rews_buf[all_offline_indices].copy(),
+                    'done': self.replay_buffer_offline.done_buf[all_offline_indices].copy(),
+                }
+                
+                # Convert to batches for validation evaluation
                 n_complete_batches = n_offline_samples // self.batch_size
                 for i in range(n_complete_batches):
                     start_idx = i * self.batch_size
@@ -165,23 +186,16 @@ class FASPEQAgent(SPEQAgent):
                         'rews': torch.FloatTensor(self.replay_buffer_offline.rews_buf[batch_indices].copy()).unsqueeze(1).to(self.device),
                         'done': torch.FloatTensor(self.replay_buffer_offline.done_buf[batch_indices].copy()).unsqueeze(1).to(self.device),
                     })
+                
+                # Remove from buffer
+                self.replay_buffer_offline.remove_indices(all_offline_indices)
         
-        # Store batches
+        # Store batches for validation
         self.val_batches_online = online_batches
         self.val_batches_offline = offline_batches
         
-        # Remove validation data from training buffers
-        if len(online_indices_to_remove) > 0:
-            self._removed_online_indices = online_indices_to_remove
-            self.replay_buffer.remove_indices(online_indices_to_remove)
-        
-        if len(offline_indices_to_remove) > 0:
-            self._removed_offline_indices = offline_indices_to_remove
-            self.replay_buffer_offline.remove_indices(offline_indices_to_remove)
-        
         total_online = len(online_batches) * self.batch_size
         total_offline = len(offline_batches) * self.batch_size
-        total_batches = len(online_batches) + len(offline_batches)
         
         if self.val_pct > 0:
             print(f"  Validation set ({self.val_pct*100:.1f}%): {len(online_batches)} online + {len(offline_batches)} offline batches")
@@ -189,6 +203,45 @@ class FASPEQAgent(SPEQAgent):
             print(f"  Validation set (n_val_batches={self.n_val_batches}): {len(online_batches)} online + {len(offline_batches)} offline batches")
         print(f"  Removed {total_online} online + {total_offline} offline transitions from training")
         print(f"  Remaining: online={self.replay_buffer.size}, offline={self.replay_buffer_offline.size}")
+    
+    def _restore_validation_data(self):
+        """
+        Restore validation data to buffers after stabilization phase.
+        This ensures the buffers don't progressively shrink across stabilization phases.
+        """
+        # Restore online data
+        if self._removed_online_data is not None:
+            n_restored = len(self._removed_online_data['obs1'])
+            for i in range(n_restored):
+                self.replay_buffer.store(
+                    self._removed_online_data['obs1'][i],
+                    self._removed_online_data['acts'][i],
+                    self._removed_online_data['rews'][i],
+                    self._removed_online_data['obs2'][i],
+                    self._removed_online_data['done'][i]
+                )
+            print(f"  Restored {n_restored} online transitions")
+        
+        # Restore offline data
+        if self._removed_offline_data is not None:
+            n_restored = len(self._removed_offline_data['obs1'])
+            for i in range(n_restored):
+                self.replay_buffer_offline.store(
+                    self._removed_offline_data['obs1'][i],
+                    self._removed_offline_data['acts'][i],
+                    self._removed_offline_data['rews'][i],
+                    self._removed_offline_data['obs2'][i],
+                    self._removed_offline_data['done'][i]
+                )
+            print(f"  Restored {n_restored} offline transitions")
+        
+        print(f"  Final buffer sizes: online={self.replay_buffer.size}, offline={self.replay_buffer_offline.size}")
+        
+        # Clear stored data to free memory
+        self.val_batches_online = None
+        self.val_batches_offline = None
+        self._removed_online_data = None
+        self._removed_offline_data = None
     
     def _evaluate_policy_loss_on_fixed_batches(self) -> float:
         """Evaluate policy loss on fixed validation batches."""
@@ -232,18 +285,6 @@ class FASPEQAgent(SPEQAgent):
                 n_batches += 1
         
         return total_loss / max(1, n_batches)
-    
-    def _restore_validation_data(self):
-        """
-        Restore validation data to buffers after stabilization phase.
-        Note: This is optional and not currently used, as the validation data
-        was already used and we don't want to train on it again in subsequent phases.
-        """
-        # Clear validation batches to free memory
-        self.val_batches_online = None
-        self.val_batches_offline = None
-        self._removed_online_indices = None
-        self._removed_offline_indices = None
     
     def finetune_offline(self, epochs: int = None, test_env=None, current_env_step: int = None) -> int:
         """Stabilization with early stopping based on validation metrics on FIXED batches."""
@@ -330,7 +371,7 @@ class FASPEQAgent(SPEQAgent):
         if current_env_step is not None:
             wandb.log({"OfflineEpochs": epochs_performed}, step=current_env_step)
         
-        # Clear validation batches to free memory (data stays removed from buffers)
+        # RESTORE validation data to buffers after stabilization
         self._restore_validation_data()
         
         return epochs_performed
