@@ -410,6 +410,15 @@ def get_algo_config(algo_name: str, args, dropout_rate: float) -> dict:
             'o2o': True,
             'target_drop_rate': 0.0,  # No dropout for RLPD
         })
+        
+    elif algo == 'sacfd':
+        config.update({
+            'num_Q': 2,
+            'utd_ratio': 1,
+            'policy_update_delay': 1,
+            'o2o': True,
+            'target_drop_rate': 0.0,  # No dropout for RLPD
+        })
     
     elif algo == 'speq':
         config.update({
@@ -611,7 +620,7 @@ def parse_args():
     # Basic
     parser.add_argument("--algo", type=str, default='iql',
                         choices=['iql', 'calql', 'rlpd', 'speq', 'speq_o2o', 
-                                 'faspeq_o2o', 'faspeq_td_val', 'faspeq_pct'])
+                                 'faspeq_o2o', 'faspeq_td_val', 'faspeq_pct', 'sacfd'])
     parser.add_argument("--env", type=str, default='hopper',
                         help="Environment name (short: hopper, antmaze-large, door; or full: Hopper-v5)")
     parser.add_argument("--seed", type=int, default=0)
