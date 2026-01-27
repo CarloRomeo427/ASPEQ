@@ -649,6 +649,9 @@ if __name__ == '__main__':
     
     # WandB run name: algo_display-name_seed
     # Examples: speq_hopper-expert_1234, iql_antmaze-large-diverse_0, calql_door-human_42
+    if args.algo == 'faspeq_o2o':
+        if args.val_patience != 10000:
+            exp_name = f"faspeq_o2o_{display_name.capitalize()}_valpat{args.val_patience}" 
     exp_name = f"{args.algo}_{display_name.capitalize()}"
     
     wandb.init(
