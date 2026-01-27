@@ -298,7 +298,12 @@ class CalQLAgent(BaseAgent):
         return policy_loss_val, td_loss_val
     
     def train_offline(self, epochs: int, test_env=None, current_env_step: int = None, log_interval: int = 10000):
-        """Cal-QL offline pretraining with periodic logging every 10k updates."""
+        """
+        Cal-QL offline pretraining.
+        
+        IMPORTANT: Logs to separate 'OfflineStep' counter to avoid conflicts with online training.
+        Online training always starts from step 0.
+        """
         print(f"CalQL offline training: {epochs} steps")
         
         for e in range(epochs):
@@ -329,12 +334,18 @@ class CalQLAgent(BaseAgent):
             
             self.update_target_networks()
             
+            # Log to separate offline metrics (NOT using step= to avoid conflicts)
             if (e + 1) % log_interval == 0:
                 print(f"  Offline pretraining epoch {e+1}/{epochs}")
                 if test_env is not None:
                     test_rw = test_agent(self, test_env, 1000, None)
-                    print(f"    EvalReward: {np.mean(test_rw):.2f}")
-                    wandb.log({"OfflineEvalReward": np.mean(test_rw)}, step=e + 1)
+                    eval_reward = np.mean(test_rw)
+                    print(f"    EvalReward: {eval_reward:.2f}")
+                    # Log with OfflineStep as x-axis, not interfering with online step counter
+                    wandb.log({
+                        "OfflineEvalReward": eval_reward,
+                        "OfflineStep": e + 1,
+                    })
         
         print(f"CalQL offline pretraining complete: {epochs} epochs")
         return epochs

@@ -197,7 +197,7 @@ if __name__ == "__main__":
     project = "SPEQ"
     
     valid_seeds = {0, 42, 1234, 5678, 9876}
-    algorithms = ["iql", "calql", "speq_o2o", "rlpd", "paspeq_o2o"]
+    algorithms = ["iql", "speq_o2o", "rlpd", "paspeq_o2o"]
     
     all_envs = ["Humanoid-v5", "Ant-v5", "HalfCheetah-v5", "Hopper-v5", "Walker2d-v5",
                 "InvertedPendulum-v5", "InvertedDoublePendulum-v5", "Pusher-v5", "Reacher-v5", "Swimmer-v5"]
@@ -230,7 +230,7 @@ if __name__ == "__main__":
         
         plt.suptitle(f"Performance Comparison - {args.dataset.upper()} Dataset", fontsize=16, fontweight='bold')
         plt.tight_layout()
-        plt.savefig(f"combined_{args.dataset}.png", dpi=300, bbox_inches="tight")
+        plt.savefig(f"Plots/combined_{args.dataset}.png", dpi=300, bbox_inches="tight")
         print(f"\nSaved: combined_{args.dataset}.png")
     else:
         for env in envs:
@@ -238,7 +238,7 @@ if __name__ == "__main__":
             fig, ax = plt.subplots(figsize=(10, 6))
             plot_single_env(api, entity, project, env, algorithms, valid_seeds, args.dataset, ax=ax)
             plt.tight_layout()
-            plt.savefig(f"{env}_{args.dataset}.png", dpi=300, bbox_inches="tight")
+            plt.savefig(f"Plots/{env}_{args.dataset}.png", dpi=300, bbox_inches="tight")
             plt.close()
         print(f"\nSaved individual plots")
     

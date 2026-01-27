@@ -140,12 +140,10 @@ def get_minari_dataset_name(canonical_name: str, quality: str, env_suite: str) -
         return f"mujoco/{canonical_name}/{quality}-{MUJOCO_DATASET_VERSION}"
     
     elif env_suite == 'antmaze':
-        # AntMaze datasets: D4RL/antmaze/{size}-v1 or D4RL/antmaze/{size}-{quality}-v1
-        # Quality options: diverse, play (umaze basic is just umaze-v1)
+        # CORRECT: Nested path format D4RL/antmaze/{size}-{quality}-v1
         if quality in ['diverse', 'play']:
             return f"D4RL/antmaze/{canonical_name}-{quality}-{ANTMAZE_DATASET_VERSION}"
         else:
-            # Default/basic dataset (no quality suffix)
             return f"D4RL/antmaze/{canonical_name}-{ANTMAZE_DATASET_VERSION}"
     
     elif env_suite == 'adroit':
@@ -375,12 +373,12 @@ def get_algo_config(algo_name: str, args, dropout_rate: float) -> dict:
     """Get algorithm-specific configuration."""
     algo = algo_name.lower()
     
+    # Base config WITHOUT dropout - dropout only for SPEQ/FASPEQ
     config = {
         'hidden_sizes': (args.network_width, args.network_width),
         'num_Q': args.num_q,
         'utd_ratio': args.utd_ratio,
         'layer_norm': args.layer_norm,
-        'target_drop_rate': dropout_rate,
     }
     
     if algo == 'iql':
@@ -389,6 +387,7 @@ def get_algo_config(algo_name: str, args, dropout_rate: float) -> dict:
             'iql_beta': args.iql_beta,
             'policy_update_delay': 1,
             'o2o': args.use_offline_data,
+            'target_drop_rate': 0.0,  # No dropout for IQL
         })
     
     elif algo == 'calql':
@@ -399,6 +398,7 @@ def get_algo_config(algo_name: str, args, dropout_rate: float) -> dict:
             'mixing_ratio': args.mixing_ratio,
             'policy_update_delay': 1,
             'o2o': args.use_offline_data,
+            'target_drop_rate': 0.0,  # No dropout for CalQL
         })
     
     elif algo == 'rlpd':
@@ -407,6 +407,7 @@ def get_algo_config(algo_name: str, args, dropout_rate: float) -> dict:
             'utd_ratio': 20,
             'policy_update_delay': 1,
             'o2o': True,
+            'target_drop_rate': 0.0,  # No dropout for RLPD
         })
     
     elif algo == 'speq':
@@ -415,6 +416,7 @@ def get_algo_config(algo_name: str, args, dropout_rate: float) -> dict:
             'offline_epochs': 75000,
             'trigger_interval': 10000,
             'o2o': False,
+            'target_drop_rate': dropout_rate,  # Dropout ONLY for SPEQ
         })
     
     elif algo == 'speq_o2o':
@@ -423,6 +425,7 @@ def get_algo_config(algo_name: str, args, dropout_rate: float) -> dict:
             'offline_epochs': 75000,
             'trigger_interval': 10000,
             'o2o': True,
+            'target_drop_rate': dropout_rate,  # Dropout ONLY for SPEQ O2O
         })
     
     elif algo == 'faspeq_o2o':
@@ -435,6 +438,7 @@ def get_algo_config(algo_name: str, args, dropout_rate: float) -> dict:
             'use_td_val': False,
             'n_val_batches': args.n_val_batches,
             'o2o': True,
+            'target_drop_rate': dropout_rate,  # Dropout ONLY for FASPEQ O2O
         })
     
     elif algo == 'faspeq_td_val':
@@ -447,6 +451,7 @@ def get_algo_config(algo_name: str, args, dropout_rate: float) -> dict:
             'use_td_val': True,
             'n_val_batches': args.n_val_batches,
             'o2o': True,
+            'target_drop_rate': dropout_rate,  # Dropout ONLY for FASPEQ TD VAL
         })
     
     return config
