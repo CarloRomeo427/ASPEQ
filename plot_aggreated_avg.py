@@ -137,7 +137,7 @@ if __name__ == "__main__":
     entity = "carlo-romeo-alt427"
     project = "SPEQ"
     valid_seeds = {0, 42, 1234, 5678, 9876}
-    algorithms = ["paspeq_o2o", "rlpd", "speq_o2o"]
+    algorithms = ["speq_o2o", "rlpd", "faspeq_pct10_pi", "faspeq_pct20_pi", "sacfd"] #["paspeq_o2o", "rlpd", "speq_o2o"]
     datasets = ["expert", "medium", "simple"]
     
     all_envs = ["Humanoid-v5", "Ant-v5", "HalfCheetah-v5", "Hopper-v5", "Walker2d-v5",
@@ -146,7 +146,7 @@ if __name__ == "__main__":
     
     api = wandb.Api()
     
-    color_map = {'paspeq_o2o': '#1f77b4', 'rlpd': '#ff7f0e', 'speq_o2o': '#2ca02c'}
+    color_map = {'paspeq_o2o': '#1f77b4', 'rlpd': "#e76f05", 'speq_o2o': '#2ca02c', }
     label_map = {'paspeq_o2o': 'PASPEQ O2O (Ours)', 'rlpd': 'RLPD', 'speq_o2o': 'SPEQ O2O'}
     
     print("="*80)
