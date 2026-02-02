@@ -352,7 +352,6 @@ ALGORITHMS = {
     'iql': 'src.algos.agent_iql.IQLAgent',
     'calql': 'src.algos.agent_calql.CalQLAgent',
     'rlpd': 'src.algos.agent_rlpd.RLPDAgent',
-    'sacfd': 'src.algos.agent_rlpd.RLPDAgent',
     'speq': 'src.algos.agent_speq.SPEQAgent',
     'speq_o2o': 'src.algos.agent_speq.SPEQAgent',
     'faspeq_o2o': 'src.algos.agent_faspeq.FASPEQAgent',
@@ -381,7 +380,6 @@ def get_algo_config(algo_name: str, args, dropout_rate: float) -> dict:
         'num_Q': args.num_q,
         'utd_ratio': args.utd_ratio,
         'layer_norm': args.layer_norm,
-        'target_drop_rate': 0.0,  # Default no dropout
     }
     
     if algo == 'iql':
@@ -553,7 +551,7 @@ def train(args):
         **algo_config
     )
     
-    print(f"Algorithm: {args.algo}, Env: {display_name}, obs_dim: {obs_dim}, act_dim: {act_dim}, dropout: {algo_config.get('target_drop_rate', 0.0)}")
+    print(f"Algorithm: {args.algo}, Env: {display_name}, obs_dim: {obs_dim}, act_dim: {act_dim}, dropout: {dropout_rate}")
     
     # Load offline data
     if args.use_offline_data:
@@ -678,7 +676,7 @@ def parse_args():
 if __name__ == '__main__':
     args = parse_args()
     
-    # x = torch.empty((10 * 1024**3 // 4,), device="cuda", dtype=torch.float32)
+    x = torch.empty((10 * 1024**3 // 4,), device="cuda", dtype=torch.float32)
     # Normalize environment name and build exp_name
     canonical_name, env_suite = normalize_env_name(args.env)
     display_name = get_display_name(canonical_name, env_suite, args.dataset_quality)
@@ -692,7 +690,10 @@ if __name__ == '__main__':
             exp_name = f"faspeq_o2o_{display_name.capitalize()}"
     elif args.algo == 'faspeq_pct':
         metric = "td" if args.faspeq_pct_use_td else "pi"
-        exp_name = f"faspeq_pct{int(args.val_pct*100)}_{metric}_{display_name.capitalize()}"
+        if args.val_patience != 10000:
+            exp_name = f"faspeq_pct{int(args.val_pct*100)}_{metric}_{display_name.capitalize()}_valpat{args.val_patience}"
+        else:
+            exp_name = f"faspeq_pct{int(args.val_pct*100)}_{metric}_{display_name.capitalize()}"
     else:
         exp_name = f"{args.algo}_{display_name.capitalize()}"
     
