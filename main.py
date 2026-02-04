@@ -747,6 +747,13 @@ if __name__ == '__main__':
             exp_name = f"faspeq_pct{int(args.val_pct*100)}_{metric}_{display_name.capitalize()}_valpat{args.val_patience}"
         else:
             exp_name = f"faspeq_pct{int(args.val_pct*100)}_{metric}_{display_name.capitalize()}"
+    elif args.algo == 'faspeq_nosplit':
+        # NO-SPLIT ABLATION: validate on entire training buffer
+        metric = "td" if args.faspeq_pct_use_td else "pi"
+        exp_name = f"faspeq_nosplit_{metric}_{display_name.capitalize()}"
+    elif args.algo == 'faspeq_randearly':
+        # RANDOM EARLY STOPPING ABLATION
+        exp_name = f"faspeq_randearly_mean{int(args.random_early_mean)}_{display_name.capitalize()}"
     else:
         exp_name = f"{args.algo}_{display_name.capitalize()}"
     

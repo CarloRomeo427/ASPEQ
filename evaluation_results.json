@@ -1,42 +1,42 @@
 [
   {
     "matchmaker": "Random",
-    "avg_pareto_reward": 0.0,
-    "std_pareto_reward": 0.0,
-    "avg_passive_score": 0.0,
-    "avg_aggressive_score": 0.418,
-    "total_extractions": 126,
-    "total_deaths": 474,
-    "total_kills": 347
+    "avg_pareto_reward": 0.24,
+    "std_pareto_reward": 0.034,
+    "avg_passive_score": 0.227,
+    "avg_aggressive_score": 0.459,
+    "total_extractions": 189,
+    "total_deaths": 411,
+    "total_kills": 323
   },
   {
     "matchmaker": "Polarized",
     "avg_pareto_reward": 0.0,
     "std_pareto_reward": 0.0,
-    "avg_passive_score": 0.0,
-    "avg_aggressive_score": 0.278,
-    "total_extractions": 22,
-    "total_deaths": 98,
-    "total_kills": 78
+    "avg_passive_score": 0.724,
+    "avg_aggressive_score": 0.0,
+    "total_extractions": 552,
+    "total_deaths": 48,
+    "total_kills": 13
   },
   {
     "matchmaker": "SBMM",
     "avg_pareto_reward": 0.0,
     "std_pareto_reward": 0.0,
-    "avg_passive_score": 0.0,
-    "avg_aggressive_score": 0.048,
-    "total_extractions": 146,
-    "total_deaths": 454,
-    "total_kills": 352
+    "avg_passive_score": 0.733,
+    "avg_aggressive_score": 0.0,
+    "total_extractions": 574,
+    "total_deaths": 26,
+    "total_kills": 0
   },
   {
     "matchmaker": "Diverse",
-    "avg_pareto_reward": 0.0,
-    "std_pareto_reward": 0.0,
-    "avg_passive_score": 0.0,
-    "avg_aggressive_score": 0.213,
-    "total_extractions": 148,
-    "total_deaths": 452,
-    "total_kills": 356
+    "avg_pareto_reward": 0.145,
+    "std_pareto_reward": 0.07,
+    "avg_passive_score": 0.181,
+    "avg_aggressive_score": 0.436,
+    "total_extractions": 143,
+    "total_deaths": 457,
+    "total_kills": 352
   }
 ]

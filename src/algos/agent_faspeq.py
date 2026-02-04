@@ -14,10 +14,6 @@ Variants:
 - FASPEQ_O2O: Fixed n_val_batches from each buffer, early stopping on policy loss
 - FASPEQ_TD_VAL: Fixed n_val_batches from each buffer, early stopping on TD error
 - FASPEQ_PCT: Percentage-based validation set (val_pct of online buffer size from each buffer)
-
-Ablations:
-- no_split: Validate on training data (no removal) to test if train/val split matters
-- random_early: Stop at random epoch to test if the metric actually provides signal
 """
 
 import numpy as np
@@ -39,10 +35,6 @@ class FASPEQAgent(SPEQAgent):
         n_val_batches: Number of batches from each buffer for validation (default: 5)
         val_pct: If > 0, use percentage-based validation instead of n_val_batches (default: 0.0)
                  The percentage is computed on online buffer size, then same count sampled from offline
-        no_split: If True, validate on training data without removal (ablation)
-        random_early: If True, stop at random epoch instead of using metric (ablation)
-        random_early_mean: Mean of log-normal distribution for random stopping (default: 20000)
-        random_early_std: Std of log-normal distribution for random stopping (default: 10000)
     """
     
     def __init__(
@@ -110,7 +102,7 @@ class FASPEQAgent(SPEQAgent):
         self._removed_online_data = None
         self._removed_offline_data = None
         
-        # Track stopping epochs for random_early calibration
+        # Track stopping epochs for analysis
         self._stopping_epochs_history = []
     
     def _sample_fixed_validation_batches(self):
@@ -124,8 +116,7 @@ class FASPEQAgent(SPEQAgent):
         offline_batches = []
         
         if self.no_split:
-            # NO-SPLIT ABLATION: validate on entire training buffer
-            # Convert entire buffers to batches (no removal)
+            # NO-SPLIT ABLATION: validate on entire training buffer (no removal)
             
             # Online buffer - use all data
             if self.replay_buffer.size >= self.batch_size:
@@ -192,7 +183,7 @@ class FASPEQAgent(SPEQAgent):
                     replace=False
                 )
                 
-                # Store raw data for restoration
+                # Store raw data for restoration BEFORE removal
                 self._removed_online_data = {
                     'obs1': self.replay_buffer.obs1_buf[all_online_indices].copy(),
                     'obs2': self.replay_buffer.obs2_buf[all_online_indices].copy(),
@@ -219,7 +210,7 @@ class FASPEQAgent(SPEQAgent):
                 # Remove from buffer
                 self.replay_buffer.remove_indices(all_online_indices)
         
-        # Sample from offline buffer
+        # Sample from offline buffer (same count as online for symmetry)
         if self.replay_buffer_offline.size >= self.batch_size:
             n_offline_samples = min(n_val_transitions, self.replay_buffer_offline.size - self.batch_size)
             if n_offline_samples >= self.batch_size:
@@ -229,6 +220,7 @@ class FASPEQAgent(SPEQAgent):
                     replace=False
                 )
                 
+                # Store raw data for restoration BEFORE removal
                 self._removed_offline_data = {
                     'obs1': self.replay_buffer_offline.obs1_buf[all_offline_indices].copy(),
                     'obs2': self.replay_buffer_offline.obs2_buf[all_offline_indices].copy(),
@@ -237,6 +229,7 @@ class FASPEQAgent(SPEQAgent):
                     'done': self.replay_buffer_offline.done_buf[all_offline_indices].copy(),
                 }
                 
+                # Convert to batches for validation evaluation
                 n_complete_batches = n_offline_samples // self.batch_size
                 for i in range(n_complete_batches):
                     start_idx = i * self.batch_size
@@ -251,8 +244,10 @@ class FASPEQAgent(SPEQAgent):
                         'done': torch.FloatTensor(self.replay_buffer_offline.done_buf[batch_indices].copy()).unsqueeze(1).to(self.device),
                     })
                 
+                # Remove from buffer
                 self.replay_buffer_offline.remove_indices(all_offline_indices)
         
+        # Store batches for validation
         self.val_batches_online = online_batches
         self.val_batches_offline = offline_batches
         
@@ -267,13 +262,17 @@ class FASPEQAgent(SPEQAgent):
         print(f"  Remaining: online={self.replay_buffer.size}, offline={self.replay_buffer_offline.size}")
     
     def _restore_validation_data(self):
-        """Restore validation data to buffers after stabilization phase."""
+        """
+        Restore validation data to buffers after stabilization phase.
+        This ensures the buffers don't progressively shrink across stabilization phases.
+        """
         # Skip restoration if no_split (nothing was removed)
         if self.no_split:
             self.val_batches_online = None
             self.val_batches_offline = None
             return
         
+        # Restore online data
         if self._removed_online_data is not None:
             n_restored = len(self._removed_online_data['obs1'])
             for i in range(n_restored):
@@ -286,6 +285,7 @@ class FASPEQAgent(SPEQAgent):
                 )
             print(f"  Restored {n_restored} online transitions")
         
+        # Restore offline data
         if self._removed_offline_data is not None:
             n_restored = len(self._removed_offline_data['obs1'])
             for i in range(n_restored):
@@ -300,6 +300,7 @@ class FASPEQAgent(SPEQAgent):
         
         print(f"  Final buffer sizes: online={self.replay_buffer.size}, offline={self.replay_buffer_offline.size}")
         
+        # Clear stored data to free memory
         self.val_batches_online = None
         self.val_batches_offline = None
         self._removed_online_data = None
@@ -351,9 +352,7 @@ class FASPEQAgent(SPEQAgent):
     def _sample_random_stopping_epoch(self) -> int:
         """
         Sample a random stopping epoch from log-normal distribution.
-        
-        Log-normal ensures positive values and right-skewed distribution
-        (most stops early, occasional long runs).
+        Log-normal ensures positive values and right-skewed distribution.
         """
         mean = self.random_early_mean
         std = self.random_early_std
@@ -378,10 +377,10 @@ class FASPEQAgent(SPEQAgent):
             random_stop_epoch = self._sample_random_stopping_epoch()
             print(f"  [RANDOM-EARLY] Will stop at epoch {random_stop_epoch}")
         
-        # Sample and fix validation batches (removal depends on no_split flag)
+        # Sample and fix validation batches at start of stabilization (also removes from training)
         self._sample_fixed_validation_batches()
         
-        # Initial validation loss (still compute for logging even in random_early mode)
+        # Initial validation loss
         if self.use_td_val:
             initial_loss = self._evaluate_td_loss_on_fixed_batches()
             metric_name = "TD_loss"
@@ -411,6 +410,7 @@ class FASPEQAgent(SPEQAgent):
                     else:
                         val_loss = self._evaluate_policy_loss_on_fixed_batches()
                     
+                    # Print validation metrics
                     improved = val_loss < best_loss * 0.999
                     status = "improved" if improved else "no improvement"
                     print(f"  Epoch {e}: val {metric_name}={val_loss:.6f} (best={best_loss:.6f}, {status}, patience={steps_without_improvement}/{self.val_patience})")
@@ -425,7 +425,7 @@ class FASPEQAgent(SPEQAgent):
                         print(f"  Early stop @ epoch {e} (no improvement for {self.val_patience} steps)")
                         break
             
-            # Q-network update
+            # Q-network update (always 50/50 symmetric sampling from REMAINING data)
             obs, obs_next, acts, rews, done = self.sample_data_mix(self.batch_size)
             
             y_q = self.get_sac_q_target(obs_next, rews, done)
@@ -467,7 +467,7 @@ class FASPEQAgent(SPEQAgent):
         if current_env_step is not None:
             wandb.log({"OfflineEpochs": epochs_performed}, step=current_env_step)
         
-        # Restore validation data (skipped if no_split)
+        # RESTORE validation data to buffers after stabilization
         self._restore_validation_data()
         
         return epochs_performed
@@ -476,6 +476,10 @@ class FASPEQAgent(SPEQAgent):
 class FASPEQPctAgent(FASPEQAgent):
     """
     FASPEQ variant that uses percentage-based validation set sizing.
+    
+    This is a convenience class that sets val_pct by default.
+    The validation set size is determined by val_pct of the online buffer size,
+    then the same count is sampled from the offline buffer for symmetry.
     """
     
     def __init__(
@@ -506,7 +510,7 @@ class FASPEQPctAgent(FASPEQAgent):
         val_check_interval: int = 1000,
         val_patience: int = 10000,
         use_td_val: bool = False,
-        val_pct: float = 0.1,
+        val_pct: float = 0.1,  # Default 10% of online buffer
         # Ablations
         no_split: bool = False,
         random_early: bool = False,
