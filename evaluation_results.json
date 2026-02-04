@@ -1,0 +1,42 @@
+[
+  {
+    "matchmaker": "Random",
+    "avg_pareto_reward": 0.0,
+    "std_pareto_reward": 0.0,
+    "avg_passive_score": 0.0,
+    "avg_aggressive_score": 0.418,
+    "total_extractions": 126,
+    "total_deaths": 474,
+    "total_kills": 347
+  },
+  {
+    "matchmaker": "Polarized",
+    "avg_pareto_reward": 0.0,
+    "std_pareto_reward": 0.0,
+    "avg_passive_score": 0.0,
+    "avg_aggressive_score": 0.278,
+    "total_extractions": 22,
+    "total_deaths": 98,
+    "total_kills": 78
+  },
+  {
+    "matchmaker": "SBMM",
+    "avg_pareto_reward": 0.0,
+    "std_pareto_reward": 0.0,
+    "avg_passive_score": 0.0,
+    "avg_aggressive_score": 0.048,
+    "total_extractions": 146,
+    "total_deaths": 454,
+    "total_kills": 352
+  },
+  {
+    "matchmaker": "Diverse",
+    "avg_pareto_reward": 0.0,
+    "std_pareto_reward": 0.0,
+    "avg_passive_score": 0.0,
+    "avg_aggressive_score": 0.213,
+    "total_extractions": 148,
+    "total_deaths": 452,
+    "total_kills": 356
+  }
+]

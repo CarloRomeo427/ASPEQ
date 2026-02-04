@@ -14,7 +14,7 @@ def exponential_moving_average(data, alpha=0.05):
 
 def build_run_name(algo, env, dataset):
     if dataset == "expert":
-        if algo == "speq_o2o":
+        if algo != "rlpd":
             return f"{algo}_{env}_{dataset}"
         else:
             return f"{algo}_{env}"
@@ -128,16 +128,72 @@ def aggregate_across_datasets_full(dataset_results, n_points=300):
     
     return common_steps, np.array(means_at_step), np.array(stds_at_step)
 
+def auto_label(algo):
+    """Auto-generate a clean label from algorithm name."""
+    # Direct mappings for common names
+    direct = {
+        'rlpd': 'RLPD',
+        'iql': 'IQL',
+        'calql': 'Cal-QL',
+        'sacfd': 'SACfD',
+        'sac': 'SAC',
+    }
+    if algo in direct:
+        return direct[algo]
+    
+    # Handle patterns
+    label = algo
+    label = label.replace('_o2o', ' O2O')
+    label = label.replace('_pi', ' (π)')
+    label = label.replace('_td', ' (TD)')
+    label = label.replace('pct10', '10%')
+    label = label.replace('pct20', '20%')
+    label = label.replace('pct', '%')
+    label = label.replace('valpat', 'pat=')
+    label = label.replace('_', ' ')
+    
+    # Clean up
+    while '  ' in label:
+        label = label.replace('  ', ' ')
+    
+    # Capitalize properly
+    parts = label.split()
+    result = []
+    for p in parts:
+        if p.upper() in ['O2O', 'TD', 'RLPD', 'IQL', 'SAC']:
+            result.append(p.upper())
+        elif p.startswith('(') or p.endswith(')') or p.endswith('%') or p.startswith('pat='):
+            result.append(p)
+        else:
+            result.append(p.upper())
+    
+    return ' '.join(result)
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--ema", type=float, default=0.05, help="EMA smoothing alpha")
+    parser.add_argument("--ema", type=float, default=0.05, help="EMA smoothing alpha (lower=smoother)")
+    parser.add_argument("--std-alpha", type=float, default=0.1, help="Std shading opacity")
     parser.add_argument("--per-dataset", action="store_true", help="Also plot per-dataset figures")
     args = parser.parse_args()
     
     entity = "carlo-romeo-alt427"
     project = "SPEQ"
     valid_seeds = {0, 42, 1234, 5678, 9876}
-    algorithms = ["speq_o2o", "rlpd", "faspeq_pct10_pi", "faspeq_pct20_pi", "sacfd"] #["paspeq_o2o", "rlpd", "speq_o2o"]
+    
+    # ============================================================
+    # ONLY CHANGE THIS LIST - everything else is automatic
+    # ============================================================
+    algorithms = [
+        "speq_o2o", 
+        "rlpd", 
+        "faspeq_pct10_pi", 
+        "faspeq_pct20_pi", 
+        "sacfd",
+        "paspeq_o2o",
+        "faspeq_o2o"
+    ]
+    # ============================================================
+    
     datasets = ["expert", "medium", "simple"]
     
     all_envs = ["Humanoid-v5", "Ant-v5", "HalfCheetah-v5", "Hopper-v5", "Walker2d-v5",
@@ -146,11 +202,19 @@ if __name__ == "__main__":
     
     api = wandb.Api()
     
-    color_map = {'paspeq_o2o': '#1f77b4', 'rlpd': "#e76f05", 'speq_o2o': '#2ca02c', }
-    label_map = {'paspeq_o2o': 'PASPEQ O2O (Ours)', 'rlpd': 'RLPD', 'speq_o2o': 'SPEQ O2O'}
+    # Auto-generate colors and labels
+    cmap = plt.cm.tab10
+    color_map = {algo: cmap(i % 10) for i, algo in enumerate(algorithms)}
+    label_map = {algo: auto_label(algo) for algo in algorithms}
     
+    # Print what we're plotting
     print("="*80)
-    print("COLLECTING DATA ACROSS ALL DATASETS (FULL CURVES)")
+    print("ALGORITHMS TO PLOT:")
+    for algo in algorithms:
+        print(f"  {algo} -> {label_map[algo]}")
+    print("="*80)
+    
+    print("\nCOLLECTING DATA ACROSS ALL DATASETS (FULL CURVES)")
     print("="*80)
     
     # Store per-dataset results for each algorithm
@@ -234,11 +298,11 @@ if __name__ == "__main__":
         mean_ema = exponential_moving_average(mean_valid, alpha=args.ema)
         std_ema = exponential_moving_average(std_valid, alpha=args.ema)
         
-        color = color_map.get(algo, 'gray')
-        label = label_map.get(algo, algo.upper())
+        color = color_map[algo]
+        label = label_map[algo]
         
         ax.plot(steps_valid, mean_ema, label=label, linewidth=2, color=color)
-        ax.fill_between(steps_valid, mean_ema - std_ema, mean_ema + std_ema, alpha=0.2, color=color)
+        ax.fill_between(steps_valid, mean_ema - std_ema, mean_ema + std_ema, alpha=args.std_alpha, color=color)
         
         print(f"  {label}: plotted {len(steps_valid)} points, max_step={steps_valid.max():.0f}, final={mean_ema[-1]:.2f} ± {std_ema[-1]:.2f}")
     
@@ -283,11 +347,11 @@ if __name__ == "__main__":
                 mean_ema = exponential_moving_average(mean_valid, alpha=args.ema)
                 std_ema = exponential_moving_average(std_valid, alpha=args.ema)
                 
-                color = color_map.get(algo, 'gray')
-                label = label_map.get(algo, algo.upper())
+                color = color_map[algo]
+                label = label_map[algo]
                 
                 ax.plot(steps_valid, mean_ema, label=label, linewidth=2, color=color)
-                ax.fill_between(steps_valid, mean_ema - std_ema, mean_ema + std_ema, alpha=0.2, color=color)
+                ax.fill_between(steps_valid, mean_ema - std_ema, mean_ema + std_ema, alpha=args.std_alpha, color=color)
             
             ax.set_title(f"Average Performance Across All Environments ({dataset.upper()})", 
                          fontsize=14, fontweight='bold')

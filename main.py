@@ -352,11 +352,15 @@ ALGORITHMS = {
     'iql': 'src.algos.agent_iql.IQLAgent',
     'calql': 'src.algos.agent_calql.CalQLAgent',
     'rlpd': 'src.algos.agent_rlpd.RLPDAgent',
+    'sacfd': 'src.algos.agent_rlpd.RLPDAgent',
     'speq': 'src.algos.agent_speq.SPEQAgent',
     'speq_o2o': 'src.algos.agent_speq.SPEQAgent',
     'faspeq_o2o': 'src.algos.agent_faspeq.FASPEQAgent',
     'faspeq_td_val': 'src.algos.agent_faspeq.FASPEQAgent',
-    'faspeq_pct': 'src.algos.agent_faspeq.FASPEQAgent',  # NEW: percentage-based variant
+    'faspeq_pct': 'src.algos.agent_faspeq.FASPEQAgent',
+    # Ablations (same class, different config)
+    'faspeq_nosplit': 'src.algos.agent_faspeq.FASPEQAgent',
+    'faspeq_randearly': 'src.algos.agent_faspeq.FASPEQAgent',
 }
 
 
@@ -447,7 +451,9 @@ def get_algo_config(algo_name: str, args, dropout_rate: float) -> dict:
             'val_patience': args.val_patience,
             'use_td_val': False,
             'n_val_batches': args.n_val_batches,
-            'val_pct': 0.0,  # Use fixed batch count
+            'val_pct': 0.0,
+            'no_split': False,
+            'random_early': False,
             'o2o': True,
             'target_drop_rate': dropout_rate,
         })
@@ -461,7 +467,9 @@ def get_algo_config(algo_name: str, args, dropout_rate: float) -> dict:
             'val_patience': args.val_patience,
             'use_td_val': True,
             'n_val_batches': args.n_val_batches,
-            'val_pct': 0.0,  # Use fixed batch count
+            'val_pct': 0.0,
+            'no_split': False,
+            'random_early': False,
             'o2o': True,
             'target_drop_rate': dropout_rate,
         })
@@ -473,9 +481,47 @@ def get_algo_config(algo_name: str, args, dropout_rate: float) -> dict:
             'trigger_interval': 10000,
             'val_check_interval': args.val_check_interval,
             'val_patience': args.val_patience,
-            'use_td_val': args.faspeq_pct_use_td,  # Can choose metric
-            'n_val_batches': 0,  # Not used when val_pct > 0
-            'val_pct': args.val_pct,  # Percentage-based
+            'use_td_val': args.faspeq_pct_use_td,
+            'n_val_batches': 0,
+            'val_pct': args.val_pct,
+            'no_split': False,
+            'random_early': False,
+            'o2o': True,
+            'target_drop_rate': dropout_rate,
+        })
+    
+    elif algo == 'faspeq_nosplit':
+        # NO-SPLIT ABLATION: validate on entire training buffer (no removal)
+        config.update({
+            'policy_update_delay': 20,
+            'offline_epochs': args.offline_epochs,
+            'trigger_interval': 10000,
+            'val_check_interval': args.val_check_interval,
+            'val_patience': args.val_patience,
+            'use_td_val': args.faspeq_pct_use_td,
+            'n_val_batches': 0,
+            'val_pct': args.val_pct,
+            'no_split': True,  # KEY: validate on entire training buffer
+            'random_early': False,
+            'o2o': True,
+            'target_drop_rate': dropout_rate,
+        })
+    
+    elif algo == 'faspeq_randearly':
+        # RANDOM EARLY STOPPING ABLATION: stop at random epoch
+        config.update({
+            'policy_update_delay': 20,
+            'offline_epochs': args.offline_epochs,
+            'trigger_interval': 10000,
+            'val_check_interval': args.val_check_interval,
+            'val_patience': args.val_patience,
+            'use_td_val': args.faspeq_pct_use_td,
+            'n_val_batches': 0,
+            'val_pct': args.val_pct,
+            'no_split': False,
+            'random_early': True,  # KEY: random stopping
+            'random_early_mean': args.random_early_mean,
+            'random_early_std': args.random_early_std,
             'o2o': True,
             'target_drop_rate': dropout_rate,
         })
@@ -620,7 +666,8 @@ def parse_args():
     # Basic
     parser.add_argument("--algo", type=str, default='iql',
                         choices=['iql', 'calql', 'rlpd', 'speq', 'speq_o2o', 
-                                 'faspeq_o2o', 'faspeq_td_val', 'faspeq_pct', 'sacfd'])
+                                 'faspeq_o2o', 'faspeq_td_val', 'faspeq_pct',
+                                 'faspeq_nosplit', 'faspeq_randearly', 'sacfd'])
     parser.add_argument("--env", type=str, default='hopper',
                         help="Environment name (short: hopper, antmaze-large, door; or full: Hopper-v5)")
     parser.add_argument("--seed", type=int, default=0)
@@ -670,13 +717,19 @@ def parse_args():
     parser.add_argument("--faspeq-pct-use-td", action="store_true",
                         help="Use TD error instead of policy loss for FASPEQ_PCT")
     
+    # FASPEQ_RANDEARLY specific
+    parser.add_argument("--random-early-mean", type=float, default=20000,
+                        help="Mean of log-normal distribution for random early stopping")
+    parser.add_argument("--random-early-std", type=float, default=10000,
+                        help="Std of log-normal distribution for random early stopping")
+    
     return parser.parse_args()
 
 
 if __name__ == '__main__':
     args = parse_args()
     
-    x = torch.empty((10 * 1024**3 // 4,), device="cuda", dtype=torch.float32)
+    # x = torch.empty((10 * 1024**3 // 4,), device="cuda", dtype=torch.float32)
     # Normalize environment name and build exp_name
     canonical_name, env_suite = normalize_env_name(args.env)
     display_name = get_display_name(canonical_name, env_suite, args.dataset_quality)

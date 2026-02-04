@@ -15,39 +15,13 @@ def exponential_moving_average(data, alpha=0.05):
 def auto_label(algo):
     """Auto-generate a clean label from algorithm name."""
     direct = {
-        'rlpd': 'RLPD',
-        'iql': 'IQL',
-        'calql': 'Cal-QL',
         'sacfd': 'SACfD',
-        'sac': 'SAC',
+        'faspeq_pct10_pi': 'FASPEQ 10% (π)',
+        'faspeq_pct10_td': 'FASPEQ 10% (TD)',
     }
     if algo in direct:
         return direct[algo]
-    
-    label = algo
-    label = label.replace('_o2o', ' O2O')
-    label = label.replace('_pi', ' (π)')
-    label = label.replace('_td', ' (TD)')
-    label = label.replace('pct10', '10%')
-    label = label.replace('pct20', '20%')
-    label = label.replace('pct', '%')
-    label = label.replace('valpat', 'pat=')
-    label = label.replace('_', ' ')
-    
-    while '  ' in label:
-        label = label.replace('  ', ' ')
-    
-    parts = label.split()
-    result = []
-    for p in parts:
-        if p.upper() in ['O2O', 'TD', 'RLPD', 'IQL', 'SAC']:
-            result.append(p.upper())
-        elif p.startswith('(') or p.endswith(')') or p.endswith('%') or p.startswith('pat='):
-            result.append(p)
-        else:
-            result.append(p.upper())
-    
-    return ' '.join(result)
+    return algo.upper()
 
 def get_eval_reward_for_run(api, entity, project, run_name_patterns, metric_name="EvalReward", valid_seeds=None):
     """Fetch eval reward data for runs matching any of the given patterns."""
@@ -97,9 +71,6 @@ def compute_mean_std_across_seeds(all_seeds_data, metric_name="EvalReward"):
     
     return np.array(all_steps), mean, std
 
-# Algorithms that omit dataset suffix for expert runs
-NO_EXPERT_SUFFIX_ALGOS = {'rlpd'}
-
 def get_env_variants(env):
     """Generate possible capitalization variants for environment names."""
     variants = [env]
@@ -109,36 +80,27 @@ def get_env_variants(env):
     lower_version = env.lower()
     if lower_version not in variants:
         variants.append(lower_version)
+    if 'Halfcheetah' in env:
+        variants.append(env.replace('Halfcheetah', 'HalfCheetah'))
+    if 'HalfCheetah' in env:
+        variants.append(env.replace('HalfCheetah', 'Halfcheetah'))
     return variants
 
-def parse_algo_name(algo):
-    """Parse algorithm name to extract base algo and any suffix (like valpat)."""
-    if '_valpat' in algo:
-        parts = algo.rsplit('_valpat', 1)
-        base_algo = parts[0]
-        suffix = f"valpat{parts[1]}"
-        return base_algo, suffix
-    return algo, None
-
-def build_run_name(algo, env, dataset):
-    """Build WandB run name pattern."""
-    base_algo, suffix = parse_algo_name(algo)
-    
-    if base_algo in NO_EXPERT_SUFFIX_ALGOS and dataset == "expert":
-        run_name = f"{base_algo}_{env}"
-    else:
-        run_name = f"{base_algo}_{env}_{dataset}"
-    
-    if suffix:
-        run_name = f"{run_name}_{suffix}"
-    
-    return run_name
-
 def build_run_name_variants(algo, env, dataset):
-    """Build all possible run name patterns considering env capitalization variants."""
+    """
+    Build all possible run name patterns.
+    
+    Naming conventions:
+    - sacfd: sacfd_{Env}_{dataset}
+    - faspeq_pct10_pi: faspeq_pct10_pi_{Env}_{dataset}
+    - faspeq_pct10_td: faspeq_pct10_td_{Env}_{dataset}
+    """
     variants = []
+    
     for env_variant in get_env_variants(env):
-        variants.append(build_run_name(algo, env_variant, dataset))
+        run_name = f"{algo}_{env_variant}_{dataset}"
+        variants.append(run_name)
+    
     return variants
 
 def collect_all_data(api, entity, project, envs, algorithms, valid_seeds, dataset, metric_name="EvalReward"):
@@ -201,14 +163,11 @@ def plot_single_env(algo_env_data, env, algorithms, ema_alpha=0.05, std_alpha=0.
 def compute_aggregated_performance(algo_env_data, algorithms, envs, n_points=300):
     """
     Compute aggregated performance across all environments for each algorithm.
-    Uses the SAME data that was used for individual environment plots.
-    
-    Returns: dict[algo] = (common_steps, aggregated_mean, aggregated_std)
+    Returns: dict[algo] = (common_steps, aggregated_mean, aggregated_std, n_envs)
     """
     aggregated = {}
     
     for algo in algorithms:
-        # Collect all env data for this algo
         env_curves = []
         for env in envs:
             data = algo_env_data[algo].get(env)
@@ -220,14 +179,11 @@ def compute_aggregated_performance(algo_env_data, algorithms, envs, n_points=300
             aggregated[algo] = None
             continue
         
-        # Find common step range (use max to not truncate)
         max_step = max(curve[0].max() for curve in env_curves)
         common_steps = np.linspace(0, max_step, n_points)
         
-        # Interpolate each environment curve to common steps and average
         interpolated_means = []
         for steps, mean in env_curves:
-            # Only interpolate within the range of this curve
             interp_mean = np.interp(common_steps, steps, mean)
             interpolated_means.append(interp_mean)
         
@@ -284,7 +240,7 @@ def plot_combined_envs(algo_env_data, envs, algorithms, dataset, ema_alpha, std_
     for idx in range(len(envs), len(axes)):
         axes[idx].set_visible(False)
     
-    plt.suptitle(f"Performance Comparison - {dataset.upper()} Dataset", fontsize=16, fontweight='bold')
+    plt.suptitle(f"FASPEQ TD vs π Ablation - {dataset.upper()} Dataset", fontsize=16, fontweight='bold')
     plt.tight_layout()
     return fig
 
@@ -329,25 +285,19 @@ if __name__ == "__main__":
     valid_seeds = {0, 42, 1234, 5678, 9876}
     
     # ============================================================
-    # ONLY CHANGE THIS LIST - everything else is automatic
+    # ALGORITHMS TO COMPARE:
+    # - sacfd (baseline)
+    # - faspeq_pct10_pi (policy loss monitoring)
+    # - faspeq_pct10_td (TD error monitoring)
     # ============================================================
     algorithms = [
-        "speq_o2o", 
-        "rlpd", 
-        # "iql",
-        "calql",
         "sacfd",
-        "faspeq_pct10_pi", 
-        # "faspeq_pct20_pi",
-        # "faspeq_pct10_td",
-        # "faspeq_pct20_td",
-        "paspeq_o2o"
+        "faspeq_pct10_pi",
+        "faspeq_pct10_td",
     ]
-    # ============================================================
     
-    all_envs = ["Humanoid-v5", "Ant-v5", "HalfCheetah-v5", "Hopper-v5", "Walker2d-v5",
-                "InvertedPendulum-v5", "InvertedDoublePendulum-v5", "Pusher-v5", "Reacher-v5", "Swimmer-v5"]
-    simple_only_envs = ["Humanoid-v5", "Ant-v5", "HalfCheetah-v5", "Hopper-v5", "Walker2d-v5"]
+    # Environments
+    envs = ["HalfCheetah-v5", "Hopper-v5", "Walker2d-v5", "Humanoid-v5", "Ant-v5"]
     
     # Determine which datasets to plot
     if args.dataset:
@@ -358,6 +308,8 @@ if __name__ == "__main__":
     api = wandb.Api()
     
     print("="*80)
+    print("FASPEQ TD vs π ABLATION STUDY")
+    print("="*80)
     print("ALGORITHMS TO PLOT:")
     for algo in algorithms:
         print(f"  {algo} -> {auto_label(algo)}")
@@ -367,8 +319,6 @@ if __name__ == "__main__":
     all_datasets_data = {}
     
     for dataset in datasets_to_plot:
-        envs = simple_only_envs if dataset == "simple" else all_envs
-        
         print(f"\n{'='*80}")
         print(f"DATASET: {dataset.upper()}")
         print(f"Environments: {len(envs)}")
@@ -384,13 +334,13 @@ if __name__ == "__main__":
                 fig, ax = plt.subplots(figsize=(10, 6))
                 plot_single_env(algo_env_data, env, algorithms, args.ema_alpha, args.std_alpha, ax=ax)
                 plt.tight_layout()
-                plt.savefig(f"Plots/{env}_{dataset}.png", dpi=300, bbox_inches="tight")
+                plt.savefig(f"Plots/td_vs_pi_{env}_{dataset}.png", dpi=300, bbox_inches="tight")
                 plt.close()
             print(f"\nSaved individual plots for {dataset}")
         else:
             fig = plot_combined_envs(algo_env_data, envs, algorithms, dataset, args.ema_alpha, args.std_alpha)
-            plt.savefig(f"Plots/combined_{dataset}.png", dpi=300, bbox_inches="tight")
-            print(f"\nSaved: Plots/combined_{dataset}.png")
+            plt.savefig(f"Plots/td_vs_pi_combined_{dataset}.png", dpi=300, bbox_inches="tight")
+            print(f"\nSaved: Plots/td_vs_pi_combined_{dataset}.png")
             plt.close()
         
         # Plot aggregated performance for this dataset
@@ -399,8 +349,8 @@ if __name__ == "__main__":
             fig, ax = plt.subplots(figsize=(12, 7))
             plot_aggregated(aggregated, algorithms, dataset, args.ema_alpha, args.std_alpha * 2, ax=ax)
             plt.tight_layout()
-            plt.savefig(f"Plots/aggregated_{dataset}.png", dpi=300, bbox_inches="tight")
-            print(f"Saved: Plots/aggregated_{dataset}.png")
+            plt.savefig(f"Plots/td_vs_pi_aggregated_{dataset}.png", dpi=300, bbox_inches="tight")
+            print(f"Saved: Plots/td_vs_pi_aggregated_{dataset}.png")
             plt.close()
         
         # Print summary statistics
@@ -418,9 +368,9 @@ if __name__ == "__main__":
             all_curves = []
             
             for dataset in datasets_to_plot:
-                algo_env_data, envs = all_datasets_data[dataset]
+                algo_env_data, dataset_envs = all_datasets_data[dataset]
                 
-                for env in envs:
+                for env in dataset_envs:
                     data = algo_env_data[algo].get(env)
                     if data is not None:
                         steps, mean, std, n_seeds = data
@@ -430,7 +380,6 @@ if __name__ == "__main__":
                 combined_aggregated[algo] = None
                 continue
             
-            # Aggregate all curves
             max_step = max(curve[0].max() for curve in all_curves)
             common_steps = np.linspace(0, max_step, 300)
             
@@ -468,15 +417,15 @@ if __name__ == "__main__":
             ax.plot(steps, mean_ema, label=label, linewidth=2, color=color)
             ax.fill_between(steps, mean_ema - std_ema, mean_ema + std_ema, alpha=0.1, color=color)
         
-        ax.set_title("Aggregated Performance - ALL DATASETS (Expert + Medium + Simple)", fontsize=14, fontweight='bold')
+        ax.set_title("FASPEQ TD vs π - ALL DATASETS (Expert + Medium + Simple)", fontsize=14, fontweight='bold')
         ax.set_xlabel("Steps", fontsize=12)
         ax.set_ylabel("Eval Reward (averaged across all env-dataset pairs)", fontsize=12)
         ax.legend(fontsize=9, loc='best')
         ax.grid(True, alpha=0.3)
         
         plt.tight_layout()
-        plt.savefig("Plots/aggregated_all_datasets.png", dpi=300, bbox_inches="tight")
-        print(f"\nSaved: Plots/aggregated_all_datasets.png")
+        plt.savefig("Plots/td_vs_pi_aggregated_all_datasets.png", dpi=300, bbox_inches="tight")
+        print(f"\nSaved: Plots/td_vs_pi_aggregated_all_datasets.png")
         plt.close()
     
     print("\n" + "="*80)
