@@ -317,6 +317,7 @@ if __name__ == "__main__":
         "faspeq_pct10_pi_valpat1000",
         "faspeq_pct10_pi_valpat3000",
         "faspeq_pct10_pi_valpat5000",
+        "speq_o2o"
     ]
     
     # Environments for ablation study

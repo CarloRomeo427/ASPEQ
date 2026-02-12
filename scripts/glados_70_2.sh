@@ -1,9 +1,7 @@
 #!/bin/bash
-for seed in 0 42 1234; do
-    for env in InvertedPendulum-v5 InvertedDoublePendulum-v5; do
-        for batch in 0.1 0.2; do
-        python main.py --algo faspeq_pct --env $env --use-offline-data --val-pct $batch --dataset-quality medium \
-        --log-wandb --seed $seed --gpu-id 1
-        done
+for seed in 0; do
+    for env in HalfCheetah-v5; do
+        python main_unified_flops.py --env $env --seed $seed --log-wandb --algo speq_o2o \
+            --gpu-id 1 --use-offline-data --dataset-quality expert
     done
 done
