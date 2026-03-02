@@ -432,7 +432,7 @@ def get_algo_config(algo_name: str, args, dropout_rate: float) -> dict:
     elif algo == 'speq':
         config.update({
             'policy_update_delay': 20,
-            'offline_epochs': 75000,
+            'offline_epochs': args.offline_epochs,
             'trigger_interval': 10000,
             'o2o': False,
             'target_drop_rate': dropout_rate,  # Dropout ONLY for SPEQ
@@ -441,7 +441,7 @@ def get_algo_config(algo_name: str, args, dropout_rate: float) -> dict:
     elif algo == 'speq_o2o':
         config.update({
             'policy_update_delay': 20,
-            'offline_epochs': 75000,
+            'offline_epochs': args.offline_epochs,
             'trigger_interval': 10000,
             'o2o': True,
             'target_drop_rate': dropout_rate,  # Dropout ONLY for SPEQ O2O
@@ -790,6 +790,9 @@ if __name__ == '__main__':
         exp_name = f"faspeq_randearly_mean{int(args.random_early_mean)}_{display_name.capitalize()}"
     elif args.algo == 'faspeq_exc_online':
         exp_name = f"faspeq_exc_online_{display_name.capitalize()}"
+        
+    elif args.algo == 'speq_o2o' and args.offline_epochs != 75000:
+        exp_name = f"speq_o2o_{display_name.capitalize()}_{args.offline_epochs}"
     else:
         exp_name = f"{args.algo}_{display_name.capitalize()}"
     

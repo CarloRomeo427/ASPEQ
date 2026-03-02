@@ -1,6 +1,7 @@
 #!/bin/bash
 for seed in 0 42 1234; do
-    for env in Humanoid-v5 Ant-v5 HalfCheetah-v5 Hopper-v5 Walker2d-v5; do
-        python main_faspeq_online.py --env $env --seed $seed --epochs 300 --log-wandb
+    for env in HalfCheetah-v5; do
+        for epochs in 10000 25000 50000 100000
+        python main.py --algo speq_o2o --env $env --seed $seed --epochs 300 --log-wandb --offline-epochs $epochs
     done
 done
