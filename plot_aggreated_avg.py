@@ -187,10 +187,11 @@ if __name__ == "__main__":
         "speq_o2o", 
         "rlpd", 
         "faspeq_pct10_pi", 
-        "faspeq_pct20_pi", 
+        # "faspeq_pct20_pi", 
         "sacfd",
-        "paspeq_o2o",
-        "faspeq_o2o"
+        # "paspeq_o2o",
+        # "faspeq_o2o",
+        "calql",
     ]
     # ============================================================
     

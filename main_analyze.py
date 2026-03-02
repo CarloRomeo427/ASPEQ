@@ -358,14 +358,13 @@ ALGORITHMS = {
     'faspeq_o2o': 'src.algos.agent_faspeq.FASPEQAgent',
     'faspeq_td_val': 'src.algos.agent_faspeq.FASPEQAgent',
     'faspeq_pct': 'src.algos.agent_faspeq.FASPEQAgent',
-    
-    
 
     # Ablations (same class, different config)
     'faspeq_nosplit': 'src.algos.agent_faspeq.FASPEQAgent',
     'faspeq_randearly': 'src.algos.agent_faspeq.FASPEQAgent',
+
+    # Profiler (real early stopping + loss logging)
     'faspeq_profiler': 'src.algos.agent_faspeq_profiler.FASPEQProfilerAgent',
-    'faspeq_exc_online': 'src.algos.agent_faspeq_exec_online.FASPEQExcOnlineAgent',
 }
 
 
@@ -530,31 +529,20 @@ def get_algo_config(algo_name: str, args, dropout_rate: float) -> dict:
             'o2o': True,
             'target_drop_rate': dropout_rate,
         })
-        
+    
     elif algo == 'faspeq_profiler':
-      config.update({
-          'policy_update_delay': 20,
-          'offline_epochs': args.offline_epochs,
-          'trigger_interval': 10000,
-          'val_check_interval': args.val_check_interval,
-          'n_val_batches': args.n_val_batches,
-          'save_dir': args.save_dir,
-          'o2o': True,
-          'target_drop_rate': dropout_rate,
-      })
-      
-    elif algo == 'faspeq_exc_online':
         config.update({
             'policy_update_delay': 20,
             'offline_epochs': args.offline_epochs,
             'trigger_interval': 10000,
             'val_check_interval': args.val_check_interval,
             'val_patience': args.val_patience,
+            'n_val_batches': 0,
             'val_pct': 0.1,
-            'o2o': False,
+            'save_dir': args.save_dir,
+            'o2o': True,
             'target_drop_rate': dropout_rate,
         })
-    
 
     return config
 
@@ -682,9 +670,10 @@ def train(args):
                 "mean_q_loss": q_loss,
                 "EvalReward": eval_reward,
             }, step=t+1)
-            
-        if args.algo.lower() == 'faspeq_profiler':
-            agent.save_loss_log(suffix=f"{display_name}_seed{args.seed}")
+    
+    # Profiler: explicit save with seed info
+    if args.algo.lower() == 'faspeq_profiler':
+        agent.save_loss_log(suffix=f"{display_name}_seed{args.seed}")
     
     print("Training complete!")
 
@@ -700,7 +689,8 @@ def parse_args():
     parser.add_argument("--algo", type=str, default='iql',
                         choices=['iql', 'calql', 'rlpd', 'speq', 'speq_o2o', 
                                  'faspeq_o2o', 'faspeq_td_val', 'faspeq_pct',
-                                 'faspeq_nosplit', 'faspeq_randearly', 'sacfd', 'faspeq_profiler', "faspeq_exc_online"])
+                                 'faspeq_nosplit', 'faspeq_randearly', 'sacfd',
+                                 'faspeq_profiler'])
     parser.add_argument("--env", type=str, default='hopper',
                         help="Environment name (short: hopper, antmaze-large, door; or full: Hopper-v5)")
     parser.add_argument("--seed", type=int, default=0)
@@ -755,8 +745,11 @@ def parse_args():
                         help="Mean of log-normal distribution for random early stopping")
     parser.add_argument("--random-early-std", type=float, default=10000,
                         help="Std of log-normal distribution for random early stopping")
+    
+    # Profiler
     parser.add_argument("--save-dir", type=str, default='.',
-                      help="Directory for profiler .npy output")
+                        help="Directory for profiler .npy output")
+    
     return parser.parse_args()
 
 
@@ -788,8 +781,8 @@ if __name__ == '__main__':
     elif args.algo == 'faspeq_randearly':
         # RANDOM EARLY STOPPING ABLATION
         exp_name = f"faspeq_randearly_mean{int(args.random_early_mean)}_{display_name.capitalize()}"
-    elif args.algo == 'faspeq_exc_online':
-        exp_name = f"faspeq_exc_online_{display_name.capitalize()}"
+    elif args.algo == 'faspeq_profiler':
+        exp_name = f"faspeq_profiler_{display_name.capitalize()}"
     else:
         exp_name = f"{args.algo}_{display_name.capitalize()}"
     

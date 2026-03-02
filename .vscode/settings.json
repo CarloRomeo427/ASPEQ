@@ -1,0 +1,8 @@
+{
+  "python.terminal.executeInFileDir": false,
+  "python.terminal.activateEnvInCurrentTerminal": false,
+  "python.linting.enabled": false,
+  "python.analysis.autoImportCompletions": false,
+  "python.terminal.activateEnvironment": false,
+  "python.defaultInterpreterPath": "/home/romeo/miniconda3/envs/speq/bin/python"
+}
