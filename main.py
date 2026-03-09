@@ -429,6 +429,14 @@ def get_algo_config(algo_name: str, args, dropout_rate: float) -> dict:
             'target_drop_rate': 0.0,  # No dropout for RLPD
         })
     
+    elif algo == 'droq':
+        config.update({
+            'policy_update_delay': 20,
+            'target_drop_rate': dropout_rate,  # Dropout ONLY for SPEQ
+            'num_Q': 2,
+            'utd_ratio': 20,
+        })
+    
     elif algo == 'speq':
         config.update({
             'policy_update_delay': 20,
@@ -763,7 +771,7 @@ def parse_args():
 if __name__ == '__main__':
     args = parse_args()
     
-    # x = torch.empty((10 * 1024**3 // 4,), device="cuda", dtype=torch.float32)
+    x = torch.empty((10 * 1024**3 // 4,), device="cuda", dtype=torch.float32)
     # Normalize environment name and build exp_name
     canonical_name, env_suite = normalize_env_name(args.env)
     display_name = get_display_name(canonical_name, env_suite, args.dataset_quality)
