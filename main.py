@@ -349,6 +349,7 @@ def load_minari_dataset(agent, canonical_name: str, quality: str, env_suite: str
 # ─────────────────────────────────────────────────────────────────────────────
 
 ALGORITHMS = {
+    'droq': 'src.algos.agent_droq.DroQAgent',
     'iql': 'src.algos.agent_iql.IQLAgent',
     'calql': 'src.algos.agent_calql.CalQLAgent',
     'rlpd': 'src.algos.agent_rlpd.RLPDAgent',
@@ -435,6 +436,7 @@ def get_algo_config(algo_name: str, args, dropout_rate: float) -> dict:
             'target_drop_rate': dropout_rate,  # Dropout ONLY for SPEQ
             'num_Q': 2,
             'utd_ratio': 20,
+            'o2o': False,
         })
     
     elif algo == 'speq':
@@ -706,7 +708,7 @@ def parse_args():
     
     # Basic
     parser.add_argument("--algo", type=str, default='iql',
-                        choices=['iql', 'calql', 'rlpd', 'speq', 'speq_o2o', 
+                        choices=['droq', 'iql', 'calql', 'rlpd', 'speq', 'speq_o2o', 
                                  'faspeq_o2o', 'faspeq_td_val', 'faspeq_pct',
                                  'faspeq_nosplit', 'faspeq_randearly', 'sacfd', 'faspeq_profiler', "faspeq_exc_online"])
     parser.add_argument("--env", type=str, default='hopper',
