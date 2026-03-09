@@ -795,6 +795,9 @@ if __name__ == '__main__':
         exp_name = f"speq_o2o_{display_name.capitalize()}_{args.offline_epochs}"
     else:
         exp_name = f"{args.algo}_{display_name.capitalize()}"
+        
+    if args.epochs != 300:
+        exp_name += f"_epochs{args.epochs}"
     
     wandb.init(
         name=exp_name,
